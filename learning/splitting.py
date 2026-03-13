@@ -144,7 +144,7 @@ def split_on_transition(region2states, tree, thresh_ratio=0.05):
         then the smaller cluster must have at least 5% of the points of the larger cluster)
     """
     print('split leaves\n')
-    leaves = tree.leaves()
+    leaves = tree.leaf_dict
 
     for region in range(len(region2states)):
         states = region2states[region]

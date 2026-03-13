@@ -6,7 +6,7 @@ def estimate_precision_n_step(T, tree, env, model, n_runs=100, n_step=1):
 
     """
     data = []
-    leaves = tree.leaves()
+    leaves = tree.leaf_dict
 
     for _ in range(n_runs):
         predictor_leaves = []
@@ -58,7 +58,7 @@ def evaluate(tree, obs, mask):
     probabilities. We then average these log probabilities over all observed
     transitions to get the average log likelihood.
     """
-    leaves = tree.leaves()
+    leaves = tree.leaf_dict
 
     # compute the total log likelihood of the observed transitions under the tree's transition probabilities
     total_log_likelihood = 0
@@ -84,8 +84,8 @@ def simulate(tree, env, n_sims=5):
     of regions and actions taken. We return these sequences as arrays, padded
     to the same length.
     """
-    leaves = tree.leaves()
-    for leaf in leaves:
+    leaves = tree.leaf_dict
+    for leaf in leaves.values():
         leaf.T = normalize_to_prob(leaf.T)
 
     all_regions = []
