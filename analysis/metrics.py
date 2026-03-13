@@ -1,9 +1,55 @@
 import numpy as np
 
 
-def estimate_precision_n_step(T, tree, env, model, n_runs=100, n_step=1):
+def estimate_precision_model(T, tree, env, model, n_runs=100, n_step=1):
     """
+    Estimate action and region prediction precision when the real model is acting.
+    The environment is driven by model.predict at every step. act_precision measures
+    how often the tree's action for a region agrees with the model's action at that
+    state. reg_precision measures how often the tree's n-step region prediction
+    matches the region the model actually ends up in.
+    """
+    data = []
+    leaves = tree.leaf_dict
 
+    for _ in range(n_runs):
+        predictor_leaves = []
+        obs, _ = env.reset()
+
+        done = False
+        for i in range(n_step):
+            predictor_leaves.append(tree.get(obs))
+
+            if (i + 1) < n_step:
+                action, _ = model.predict(obs, deterministic=True)
+                obs, _, done, _, _ = env.step(action)
+
+        while not done:
+            predictors = tuple(l.label for l in predictor_leaves[-n_step:])
+            predicted_reg = np.argmax(T[predictors]).flatten()[0]
+            tree_act = leaves[predictors[-1]].action
+
+            actual_act, _ = model.predict(obs, deterministic=True)
+            nobs, _, done, _, _ = env.step(actual_act)
+            actual_reg = tree.get(nobs).label
+
+            predictor_leaves.append(leaves[actual_reg])
+            data.append((tree_act, actual_act, predicted_reg, actual_reg))
+            obs = nobs
+
+    data = np.array(data)
+    act_precision = sum(data[:,0] == data[:,1]) / len(data)
+    reg_precision = sum(data[:,2] == data[:,3]) / len(data)
+    return act_precision, reg_precision
+
+
+def estimate_precision_tree(T, tree, env, model, n_runs=100, n_step=1):
+    """
+    Estimate action and region prediction precision when the tree is acting.
+    The environment is driven by the tree's leaf action at every step. act_precision
+    measures how often the tree's action agrees with what the model would have done.
+    reg_precision measures how often the tree's n-step region prediction matches
+    the region actually reached under the tree's policy.
     """
     data = []
     leaves = tree.leaf_dict
@@ -15,30 +61,22 @@ def estimate_precision_n_step(T, tree, env, model, n_runs=100, n_step=1):
         done = False
         for i in range(n_step):
             leaf = tree.get(obs)
-            action = leaf.action
-
             predictor_leaves.append(leaf)
 
             if (i + 1) < n_step:
-                obs, _, done, _, _ = env.step(action)
+                obs, _, done, _, _ = env.step(leaf.action)
 
         while not done:
-
             predictors = tuple(l.label for l in predictor_leaves[-n_step:])
             predicted_reg = np.argmax(T[predictors]).flatten()[0]
-            action = leaves[predictors[-1]].action
+            tree_act = leaves[predictors[-1]].action
 
-            nobs, _, done, _, _ = env.step(action)
-
+            nobs, _, done, _, _ = env.step(tree_act)
             actual_act, _ = model.predict(obs, deterministic=True)
             actual_reg = tree.get(nobs).label
 
             predictor_leaves.append(leaves[actual_reg])
-
-            data.append((
-                action, actual_act,
-                predicted_reg, actual_reg
-            ))
+            data.append((tree_act, actual_act, predicted_reg, actual_reg))
             obs = nobs
 
     data = np.array(data)

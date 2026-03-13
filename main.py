@@ -5,7 +5,7 @@ from collections import defaultdict
 from itertools import combinations
 from configs import load_config
 
-from analysis.metrics import estimate_precision_n_step, evaluate
+from analysis.metrics import estimate_precision_model, estimate_precision_tree, evaluate
 from envs.load import load_env
 from learning.splitting import split_on_action, split_on_transition
 from models.policy import load_or_train_model
@@ -82,7 +82,8 @@ if __name__ == '__main__':
     initial_preds = config['initial_preds']
     pad_to_size = config['pad_to_size']
     mark_terminal = config['mark_terminal']
-    rounds = config['rounds']
+    # rounds = config['rounds']
+    rounds = 2
     n_dims = config['n_dims']
     n_acts = config['n_acts']
 
@@ -140,8 +141,10 @@ if __name__ == '__main__':
 
         # check precision
         T1 = np.array([l.T for l in tree.leaves()])
-        _, reg_precision = estimate_precision_n_step(T1, tree, env, model)
-        print(f'Precision (1 step): {reg_precision}')
+        _, reg_precision_model = estimate_precision_model(T1, tree, env, model)
+        _, reg_precision_tree  = estimate_precision_tree(T1, tree, env, model)
+        print(f'Precision (1 step, model acting): {reg_precision_model}')
+        print(f'Precision (1 step, tree acting):  {reg_precision_tree}')
 
         # make n step transition matrix and check n step precision
         n_step = 2
@@ -152,11 +155,13 @@ if __name__ == '__main__':
             T[t[0],t[1],t[2]] += 1
         T = normalize_to_prob(T, axis=n_step)
 
-        _, reg_precision = estimate_precision_n_step(T, tree, env, model, n_step=n_step)
-        print(f'Precision ({n_step} step): {reg_precision}')
+        _, reg_precision_model = estimate_precision_model(T, tree, env, model, n_step=n_step)
+        _, reg_precision_tree  = estimate_precision_tree(T, tree, env, model, n_step=n_step)
+        print(f'Precision ({n_step} step, model acting): {reg_precision_model}')
+        print(f'Precision ({n_step} step, tree acting):  {reg_precision_tree}')
 
         # plot the current tree
-        if i > 0:
+        if i > -1:
             plot_tree_partition(
                 tree, draw_boundaries=False,
                 points=obs, acts=acts, mask=mask,
