@@ -39,7 +39,7 @@ def sample_next_states(tree : TreeObserver, env, obs, mask, n_samples=16):
             next_states.append(ns)
 
             # break if transition is deterministic
-            if ns == ps:
+            if np.array_equal(ns, ps):
                 break
             else:
                 ps = ns
@@ -65,7 +65,7 @@ def get_transitions(tree, obs, mask, n_step=1):
             [labels[i:len(labels) - n_step + i] for i in range(n_step + 1)]
         ).T)
 
-    return np.concat(transitions)
+    return np.concatenate(transitions)
 
 
 if __name__ == '__main__':
@@ -156,10 +156,9 @@ if __name__ == '__main__':
         print(f'Precision ({n_step} step): {reg_precision}')
 
         # plot the current tree
-        if i > 8:
+        if i > 0:
             plot_tree_partition(
                 tree, draw_boundaries=False,
                 points=obs, acts=acts, mask=mask,
                 title=f"Round {i+1}"
             )
-            import ipdb; ipdb.set_trace()

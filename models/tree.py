@@ -157,7 +157,7 @@ class TreeObserver:
 
     def get_labels(self, x):
         idxs = np.arange(len(x))
-        labels = np.zeros((len(x),), dtype=np.int8) - 1
+        labels = np.zeros((len(x),), dtype=np.int32) - 1
         self.root.get_labels(x, idxs, labels)
         return labels
 
@@ -313,7 +313,6 @@ class PolyBranch(BranchBase):
 
     def put(self, x):
         prediction = self.predict(x)
-        import ipdb; ipdb.set_trace()
         self.left.put(x[prediction == 0])
         self.right.put(x[prediction == 1])
 

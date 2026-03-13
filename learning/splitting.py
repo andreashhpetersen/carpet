@@ -53,7 +53,6 @@ def poly_log_reg(X, y, degree=1, plot=False, max_iter=200, thresh=0.95, max_degr
     - max_degree: maximum polynomial degree to try
     - min_improvement: minimum absolute increase in test score required to prefer a higher-degree model
     """
-    rng = np.random.RandomState(0)
     X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.1, random_state=0)
 
     best_pipe = None
@@ -120,8 +119,9 @@ def split_on_action(tree, states, acts, mask, thresh=0.95):
             branch = tree.split_leaf(
                 leaf.states, leaf.acts, leaf, thresh=thresh
             )
-            branch.left.action = 0
-            branch.right.action = 1
+            preds = branch.pipe.predict(leaf.states)
+            branch.left.action = int(np.bincount(leaf.acts[preds == 0].astype(int)).argmax())
+            branch.right.action = int(np.bincount(leaf.acts[preds == 1].astype(int)).argmax())
 
         elif len(unique) == 1:
             leaf.action = unique.item()
