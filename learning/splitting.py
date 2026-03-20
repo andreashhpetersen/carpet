@@ -85,7 +85,7 @@ def poly_log_reg(X, y, degree=1, plot=False, max_iter=200, thresh=0.95, max_degr
     if best_score < thresh:
         print(f"Best score {best_score:.3f} reached at degree {chosen_degree}, below thresh {thresh}")
 
-    return best_pipe
+    return best_pipe, best_score
 
 
 def split_on_action(tree, states, acts, mask, thresh=0.95):
@@ -125,6 +125,186 @@ def split_on_action(tree, states, acts, mask, thresh=0.95):
 
         elif len(unique) == 1:
             leaf.action = unique.item()
+
+
+def split_on_transition_tv(region2states, tree, tv_thresh=0.3, acc_thresh=0.7, thresh_ratio=0.05):
+    """
+    Alternative to split_on_transition that determines split candidates purely
+    in transition probability space, then gates on spatial learnability.
+
+    The original split_on_transition derives the cluster count from the number of
+    distinct deterministic target regions, which means regions where all transitions
+    are stochastic are never split even if they contain states with clearly different
+    transition distributions. This function always clusters with k=2 directly in
+    probability space, so both deterministic and stochastic transitions contribute
+    equally to the split criterion.
+
+    Three gates control whether a candidate split is committed:
+
+      Gate 1 — Balance: the smaller cluster must be at least `thresh_ratio` times
+        the size of the larger cluster. Prevents splitting on tiny outlier groups
+        that are likely noise or boundary misclassification artefacts.
+
+      Gate 2 — TV distance: the total variation distance between the two cluster
+        mean transition vectors must exceed `tv_thresh`. TV(p,q) = 0.5 * sum|p-q|
+        ranges from 0 (identical distributions) to 1 (completely disjoint support).
+        Prevents splits where the two groups behave nearly identically.
+
+      Gate 3 — Spatial learnability: a polynomial boundary must achieve at least
+        `acc_thresh` accuracy on a held-out test split. This is the key guard
+        against the "clusters that cannot be sensibly split in point space" failure
+        mode. If the two probability-space clusters are geometrically interleaved,
+        no boundary will separate them and the split is skipped.
+
+    Parameters
+    ----------
+    region2states : list of lists, length n_regions
+        Output of sample_next_states.
+    tree : TreeObserver
+    tv_thresh : float
+        Minimum TV distance between cluster means required to attempt a split.
+        Raise to demand more distinct transition behavior before splitting.
+    acc_thresh : float
+        Minimum spatial boundary accuracy required to commit to a split.
+        Raise to require cleaner geometric separation between the clusters.
+    thresh_ratio : float
+        Minimum ratio of smaller to larger cluster size.
+    """
+    print('split leaves (TV)\n')
+    leaves = tree.leaf_dict
+
+    for region in range(len(region2states)):
+        states = region2states[region]
+        if len(states) < 10:
+            continue
+
+        leaf = leaves[region]
+        if leaf.terminal:
+            continue
+
+        probs  = np.array([s.trans_prob for s in states])
+        points = np.array([s.point for s in states])
+
+        # Cluster directly in probability space with k=2.  Unlike
+        # split_on_transition, this treats stochastic and deterministic
+        # transitions uniformly — any two states with different transition
+        # distributions will be pulled into different clusters.
+        y = AgglomerativeClustering(n_clusters=2).fit_predict(probs)
+
+        # Gate 1: balance.
+        n0, n1 = np.sum(y == 0), np.sum(y == 1)
+        ratio = min(n0, n1) / max(n0, n1)
+        if ratio <= thresh_ratio:
+            continue
+
+        # Gate 2: TV distance between the two cluster mean vectors.
+        mean0 = np.mean(probs[y == 0], axis=0)
+        mean1 = np.mean(probs[y == 1], axis=0)
+        tv = 0.5 * np.sum(np.abs(mean0 - mean1))
+        if tv < tv_thresh:
+            continue
+
+        # Gate 3: spatial learnability.  Fit a polynomial boundary and check
+        # the held-out accuracy.  If the clusters are not geometrically separable
+        # the split is skipped, preventing the low-quality boundaries that
+        # motivated this function.
+        pipe, score = poly_log_reg(points, y, thresh=acc_thresh)
+        if score < acc_thresh:
+            print(f'  Region {region}: skipping (TV={tv:.2f}, spatial acc={score:.2f} < {acc_thresh})')
+            continue
+
+        # Pass the already-fitted pipe to split_leaf to avoid a second fit.
+        tree.split_leaf(points, y, leaf, pipe=pipe)
+
+    tree.reorder_leaf_labels()
+
+
+def split_on_transition_unified(region2states, tree, acc_thresh=0.9, thresh_ratio=0.05, tv_thresh=0.1):
+    """
+    Unified transition-based splitting combining the structural grounding of
+    split_on_transition with an explicit geometric feasibility gate.
+
+    For each region:
+    - If deterministic target groups exist (n_det_clusters > 1), use them to
+      determine k and cluster in probability space, same as split_on_transition.
+      Unlike split_on_transition, the split is only committed if a polynomial
+      boundary achieves at least acc_thresh accuracy in point space.
+    - If the region is fully stochastic (n_det_clusters <= 1), fall back to k=2
+      clustering in probability space, gated by TV distance between cluster means.
+      The geometric feasibility gate still applies.
+
+    In both cases the balance ratio gate applies.
+
+    Parameters
+    ----------
+    region2states : list of lists, length n_regions
+    tree : TreeObserver
+    acc_thresh : float
+        Minimum spatial boundary accuracy to commit a split. Applied in both
+        the deterministic and stochastic branches.
+    thresh_ratio : float
+        Minimum ratio of smaller to larger cluster size.
+    tv_thresh : float
+        Minimum TV distance between cluster means required in the stochastic
+        fallback branch. Not applied when deterministic structure guides k.
+    """
+    print('split leaves (unified)\n')
+    leaves = tree.leaf_dict
+
+    for region in range(len(region2states)):
+        states = region2states[region]
+        if len(states) < 10:
+            continue
+
+        leaf = leaves[region]
+        if leaf.terminal:
+            continue
+
+        probs  = np.array([s.trans_prob for s in states])
+        points = np.array([s.point for s in states])
+
+        det_groups = get_deterministic_args(probs)
+        n_clusters = len(det_groups)
+
+        if n_clusters > 1:
+            # Deterministic structure available: use it to determine k.
+            clustering = AgglomerativeClustering(n_clusters=n_clusters).fit_predict(probs)
+
+            if n_clusters > 2:
+                # Collapse to 2 groups by clustering the per-cluster point-space
+                # centroids, preserving geometric coherence.
+                clust_data = characterize_clusters(points, clustering)
+                clust2 = AgglomerativeClustering(n_clusters=2).fit_predict(clust_data)
+                c2 = np.argwhere(clust2 == 1)
+                y = np.zeros_like(clustering)
+                y[np.isin(clustering, c2)] = 1
+            else:
+                y = clustering
+        else:
+            # Fully stochastic: fall back to k=2 in probability space.
+            y = AgglomerativeClustering(n_clusters=2).fit_predict(probs)
+
+            mean0 = np.mean(probs[y == 0], axis=0)
+            mean1 = np.mean(probs[y == 1], axis=0)
+            tv = 0.5 * np.sum(np.abs(mean0 - mean1))
+            if tv < tv_thresh:
+                continue
+
+        # Balance gate.
+        n0, n1 = np.sum(y == 0), np.sum(y == 1)
+        ratio = min(n0, n1) / max(n0, n1)
+        if ratio <= thresh_ratio:
+            continue
+
+        # Geometric feasibility gate — applied in both branches.
+        pipe, score = poly_log_reg(points, y, thresh=acc_thresh)
+        if score < acc_thresh:
+            print(f'  Region {region}: skipping (spatial acc={score:.2f} < {acc_thresh})')
+            continue
+
+        tree.split_leaf(points, y, leaf, pipe=pipe)
+
+    tree.reorder_leaf_labels()
 
 
 def split_on_transition(region2states, tree, thresh_ratio=0.05):
