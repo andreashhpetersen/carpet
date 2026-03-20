@@ -1,3 +1,5 @@
+import os
+import re
 import numpy as np
 import matplotlib.pyplot as plt
 
@@ -122,7 +124,8 @@ def get_leaf_mesh(leaf, resolution=400):
 def plot_tree_partition(
     tree, draw_boundaries=True,
     cmap='tab20', alpha=0.6, contour_resolution=200,
-    points=None, acts=None, mask=None, title=None):
+    points=None, acts=None, mask=None, title=None,
+    save_dir='notes/imgs', point_size=3):
     """
     Plot 2D partition for TreeObserver (HERE BE DRAGONS). Only supports 2D
     state spaces. Can optionally overlay split boundaries and scatter points on
@@ -138,6 +141,11 @@ def plot_tree_partition(
     - acts: optional (N,) array of actions corresponding to points for coloring
     - mask: optional boolean array of shape (N,) to select subset of points to plot
     - title: optional title for the plot
+    - save_dir: directory to save the figure in. The filename is derived from
+      `title` (lowercased, whitespace collapsed to underscores). Pass None to
+      disable saving.
+    - point_size: marker size for scatter points (default 3, smaller than
+      matplotlib's default of 36 so the region colors remain visible)
     """
     print("lets plot!")
 
@@ -256,10 +264,11 @@ def plot_tree_partition(
             for act in unique_acts:
                 ax.scatter(
                     masked_points[masked_acts == act][:,0],
-                    masked_points[masked_acts == act][:,1]
+                    masked_points[masked_acts == act][:,1],
+                    s=point_size,
                 )
         else:
-            ax.scatter(masked_points[:,0], masked_points[:,1])
+            ax.scatter(masked_points[:,0], masked_points[:,1], s=point_size)
 
     # legend
     print_labels = []
@@ -279,6 +288,15 @@ def plot_tree_partition(
     ax.set_xlabel("x0")
     ax.set_ylabel("x1")
     plt.tight_layout()
+
+    if save_dir is not None:
+        slug = re.sub(r'\s+', '_', title.lower()) if title else 'partition'
+        slug = re.sub(r'[^\w_]', '', slug)   # strip any non-word characters
+        os.makedirs(save_dir, exist_ok=True)
+        save_path = os.path.join(save_dir, f'{slug}.png')
+        plt.savefig(save_path, dpi=150, bbox_inches='tight')
+        print(f'Saved plot to {save_path}')
+
     plt.show()
     plt.close()
 
