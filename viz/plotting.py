@@ -125,7 +125,7 @@ def plot_tree_partition(
     tree, draw_boundaries=True,
     cmap='tab20', alpha=0.6, contour_resolution=200,
     points=None, acts=None, mask=None, title=None,
-    save_dir='notes/imgs', point_size=3):
+    save_dir='notes/imgs', point_size=3, save_point_size=1):
     """
     Plot 2D partition for TreeObserver (HERE BE DRAGONS). Only supports 2D
     state spaces. Can optionally overlay split boundaries and scatter points on
@@ -212,7 +212,7 @@ def plot_tree_partition(
     for lab in unique_labels:
         color_grid[lab_grid == lab] = label_to_color[lab]
 
-    fig, ax = plt.subplots(figsize=(6,6))
+    fig, ax = plt.subplots(figsize=(10, 8))
     ax.imshow(color_grid, origin='lower', extent=(xmin, xmax, ymin, ymax), aspect='auto', alpha=alpha)
 
     # overlay split visualizations
@@ -256,19 +256,22 @@ def plot_tree_partition(
     if draw_boundaries:
         draw_splits(tree.root, (xmin, xmax, ymin, ymax))
 
+    scatter_artists = []
     if points is not None:
         masked_points = points[mask]
         if acts is not None:
             masked_acts = acts[mask]
             unique_acts = np.unique(masked_acts)
             for act in unique_acts:
-                ax.scatter(
+                sc = ax.scatter(
                     masked_points[masked_acts == act][:,0],
                     masked_points[masked_acts == act][:,1],
                     s=point_size,
                 )
+                scatter_artists.append(sc)
         else:
-            ax.scatter(masked_points[:,0], masked_points[:,1], s=point_size)
+            sc = ax.scatter(masked_points[:,0], masked_points[:,1], s=point_size)
+            scatter_artists.append(sc)
 
     # legend
     print_labels = []
@@ -281,21 +284,26 @@ def plot_tree_partition(
               bbox_to_anchor=(1.05, 1), loc='upper left')
 
     if title:
-        ax.set_title(title)
+        ax.set_title(title, fontsize=14)
 
     ax.set_xlim(xmin, xmax)
     ax.set_ylim(ymin, ymax)
-    ax.set_xlabel("x0")
-    ax.set_ylabel("x1")
+    ax.set_xlabel("x0", fontsize=12)
+    ax.set_ylabel("x1", fontsize=12)
+    ax.tick_params(labelsize=11)
     plt.tight_layout()
 
     if save_dir is not None:
+        for sc in scatter_artists:
+            sc.set_sizes(np.full(len(sc.get_offsets()), save_point_size))
         slug = re.sub(r'\s+', '_', title.lower()) if title else 'partition'
         slug = re.sub(r'[^\w_]', '', slug)   # strip any non-word characters
         os.makedirs(save_dir, exist_ok=True)
         save_path = os.path.join(save_dir, f'{slug}.png')
-        plt.savefig(save_path, dpi=150, bbox_inches='tight')
+        plt.savefig(save_path, dpi=200, bbox_inches='tight')
         print(f'Saved plot to {save_path}')
+        for sc in scatter_artists:
+            sc.set_sizes(np.full(len(sc.get_offsets()), point_size))
 
     plt.show()
     plt.close()
