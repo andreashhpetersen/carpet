@@ -53,7 +53,11 @@ def poly_log_reg(X, y, degree=1, plot=False, max_iter=200, thresh=0.95, max_degr
     - max_degree: maximum polynomial degree to try
     - min_improvement: minimum absolute increase in test score required to prefer a higher-degree model
     """
-    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.1, random_state=0)
+    # Use stratified split if all classes have enough samples; with test_size=0.1
+    # sklearn needs at least 1 sample per class in each split.
+    min_class_count = np.min(np.bincount(y.astype(int)))
+    stratify = y if min_class_count >= 10 else None
+    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.1, random_state=0, stratify=stratify)
 
     best_pipe = None
     best_score = -np.inf
