@@ -1,6 +1,7 @@
 def bouncing_ball_config():
     return {
         'env_id': 'BouncingBall-v0',
+        'model_name': 'Bouncing Ball',
         'model_path': './saved_models/bb_ppo_with_replay_250.zip',
         'model_dir': 'bouncing_ball',
         'n_timesteps': 250_000,
@@ -18,6 +19,7 @@ def bouncing_ball_config():
 def random_walk_config():
     return {
         'env_id': 'RandomWalk-v0',
+        'model_name': 'Random Walk',
         'model_path': './saved_models/rw-ppo-50_000.zip',
         'model_dir': 'random_walk',
         'n_timesteps': 50_000,
