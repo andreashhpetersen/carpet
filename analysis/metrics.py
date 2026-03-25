@@ -87,19 +87,25 @@ def estimate_precision_tree(T, tree, env, model, n_runs=100, n_step=1):
 
 def evaluate(tree, obs, mask):
     """
-    Evaluate the learned tree by computing the average log likelihood of the
-    observed transitions under the tree's transition probabilities.
+    Evaluate the learned tree by computing the average log likelihood and
+    perplexity of the observed transitions under the tree's transition
+    probabilities.
 
     For each observed transition (s_t, s_{t+1}), we find the corresponding
     leaves in the tree and compute the log probability of transitioning from
     the current leaf to the next leaf according to the tree's transition
-    probabilities. We then average these log probabilities over all observed
-    transitions to get the average log likelihood.
+    probabilities. Zero-probability transitions are excluded from the
+    likelihood computation and reported separately.
+
+    Perplexity = exp(-avg_log_likelihood) and can be interpreted as the
+    effective number of equally likely next regions per transition.
+    Perplexity of 1.0 means perfect prediction.
     """
     leaves = tree.leaf_dict
 
-    # compute the total log likelihood of the observed transitions under the tree's transition probabilities
     total_log_likelihood = 0
+    n_transitions = 0
+    n_zero = 0
     for run, run_mask in zip(obs, mask):
         run_obs = run[run_mask]
         labels = tree.get_labels(run_obs)
@@ -108,10 +114,15 @@ def evaluate(tree, obs, mask):
             current_leaf = leaves[labels[i]]
             next_leaf = labels[i+1]
             prob = current_leaf.T[next_leaf]
-            total_log_likelihood += np.log(prob + 1e-10)  # add small value to avoid log(0)
+            if prob == 0:
+                n_zero += 1
+            else:
+                total_log_likelihood += np.log(prob)
+                n_transitions += 1
 
-    avg_log_likelihood = total_log_likelihood / (np.sum(mask) - len(mask))
-    print(f"Average log likelihood of observed transitions: {avg_log_likelihood}")
+    avg_log_likelihood = total_log_likelihood / n_transitions if n_transitions > 0 else float('-inf')
+    perplexity = np.exp(-avg_log_likelihood)
+    print(f"Average log likelihood: {avg_log_likelihood:.4f} | Perplexity: {perplexity:.4f} | Zero-prob transitions: {n_zero}/{n_transitions + n_zero}")
 
 
 def simulate(tree, env, n_sims=5):
