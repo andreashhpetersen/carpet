@@ -1,5 +1,7 @@
 import warnings
 import numpy as np
+import joblib
+import os
 from collections import defaultdict
 from learning.splitting import poly_log_reg
 from utils import normalize_to_prob
@@ -204,6 +206,17 @@ class TreeObserver:
 
         for leaf in leaves.values():
             leaf.T = normalize_to_prob(leaf.T)
+
+    def save(self, path):
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        joblib.dump(self, path)
+        print(f"Tree saved to {path}")
+
+    @staticmethod
+    def load(path):
+        tree = joblib.load(path)
+        print(f"Tree loaded from {path}")
+        return tree
 
     def initialize_axis_branches(self, predicates):
         for var_idx, c in predicates:
