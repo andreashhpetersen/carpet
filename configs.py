@@ -50,7 +50,7 @@ def cruise_control_config():
         # splits on all 3 dims: unsafe distance, close following, reversing ego, reversing front
         'initial_preds': [(2, 0), (2, 30), (0, 0), (1, 0)],
         'pad_to_size': 121,
-        'mark_terminal': True,
+        'mark_terminal': False,
         'estimation_runs': 50,
         'rounds': 3,
         'n_dims': 3,
