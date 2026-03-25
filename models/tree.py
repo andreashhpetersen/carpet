@@ -71,17 +71,22 @@ class TreeObserver:
 
         return leaves
 
-    def split_leaf(self, X, y, leaf, thresh=0.95):
+    def split_leaf(self, X, y, leaf, thresh=0.95, pipe=None):
         """
         Finds a polynomial decision boundary for X and y and creates a new
-        PolyBranch to replace `leaf'
+        PolyBranch to replace `leaf`.
+
+        If `pipe` is provided it is used directly, skipping the poly_log_reg fit.
+        This allows callers that have already fitted and screened a pipeline (e.g.
+        split_on_transition_tv) to avoid fitting it a second time.
         """
 
         if leaf.terminal:
             warnings.warn(f"Trying to split terminal leaf {leaf.label}, skipping.")
             return None
 
-        pipe = poly_log_reg(X, y, plot=False, max_iter=1000, thresh=thresh)
+        if pipe is None:
+            pipe, _ = poly_log_reg(X, y, plot=False, max_iter=1000, thresh=thresh)
 
         branch = PolyBranch(pipe)
         branch.parent = leaf.parent
@@ -308,13 +313,13 @@ class PolyBranch(BranchBase):
         self.pipe = pipe
         self.is_poly_branch = True
 
-    def predict(self, x):
-        return self.pipe.predict(x)
+    def predict(self, x, astype=bool):
+        return self.pipe.predict(x).astype(astype)
 
-    def put(self, x):
+    def put(self, x, acts=None):
         prediction = self.predict(x)
-        self.left.put(x[prediction == 0])
-        self.right.put(x[prediction == 1])
+        self.left.put(x[~prediction], acts=None if acts is None else acts[~prediction])
+        self.right.put(x[prediction], acts=None if acts is None else acts[prediction])
 
 
 class PolyLeaf:
