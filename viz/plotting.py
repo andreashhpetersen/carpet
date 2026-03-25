@@ -212,7 +212,7 @@ def plot_tree_partition(
     for lab in unique_labels:
         color_grid[lab_grid == lab] = label_to_color[lab]
 
-    fig, ax = plt.subplots(figsize=(10, 8))
+    fig, ax = plt.subplots(figsize=(12, 8))
     ax.imshow(color_grid, origin='lower', extent=(xmin, xmax, ymin, ymax), aspect='auto', alpha=alpha)
 
     # overlay split visualizations
