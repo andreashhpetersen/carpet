@@ -50,6 +50,7 @@ class TreeObserver:
         self.n_acts = n_acts
         self.bounds = bounds
         self.resolution = resolution
+        self.T = None
 
         if initial_preds is not None:
             self.initialize_axis_branches(initial_preds)
@@ -180,32 +181,32 @@ class TreeObserver:
                 stack.append(node.right)
                 stack.append(node.left)
 
-    def set_transition_scores(self, states, mask, normalize=True):
+    def set_transition_scores(self, states, mask, n_step=1):
         """
-        Set transition scores for each leaf based on the observed transitions
-        in `states`.
-        """
-        leaves = self.leaf_dict
-        for leaf in leaves.values():
-            leaf.T = np.zeros((self.n_leaves,))
+        Compute the n_step-step transition matrix and store it as tree.T.
 
-        # it's just easier this way
+        tree.T has shape (n_leaves,) * (n_step + 1), where
+        tree.T[r_0, r_1, ..., r_{n_step}] is the probability of visiting
+        region r_{n_step} given that the trajectory passed through
+        r_0, r_1, ..., r_{n_step-1}. Normalized along the last axis.
+        """
         if len(states.shape) == 3:
             states = states.reshape(-1, states.shape[-1])
             mask = mask.reshape(-1)
 
-        # don't ask
+        leaves = self.leaf_dict
         labels = self.get_labels(states)
-        for i in range(len(mask)-1):
-            if not (mask[i] and mask[i+1]):
-                continue
-            l0, l1 = labels[i], labels[i+1]
-            if leaves[l0].terminal:
-                continue
-            leaves[l0].T[l1] += 1
+        T = np.zeros((self.n_leaves,) * (n_step + 1))
 
-        for leaf in leaves.values():
-            leaf.T = normalize_to_prob(leaf.T)
+        for i in range(len(mask) - n_step):
+            if not all(mask[i:i + n_step + 1]):
+                continue
+            idx = tuple(labels[i:i + n_step + 1])
+            if leaves[idx[0]].terminal:
+                continue
+            T[idx] += 1
+
+        self.T = normalize_to_prob(T, axis=-1)
 
     def save(self, path):
         os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -340,9 +341,7 @@ class PolyLeaf:
         self.states = []
         self.acts = None
         self.label = None
-        self.T = None
         self.parent = parent
-        self._next_region = None
         self.terminal = False
         self.action = 0  # this is a bit of a hack, but we need something for the terminal leaves
 
@@ -352,10 +351,6 @@ class PolyLeaf:
     @property
     def is_leaf(self):
         return True
-
-    @property
-    def next_region(self):
-        return self.label if np.sum(self.T) == 0 else np.argmax(self.T)
 
     def put(self, states, acts=None):
         self.states = states

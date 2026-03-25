@@ -113,7 +113,7 @@ def evaluate(tree, obs, mask):
         for i in range(len(labels)-1):
             current_leaf = leaves[labels[i]]
             next_leaf = labels[i+1]
-            prob = current_leaf.T[next_leaf]
+            prob = tree.T[current_leaf.label, next_leaf]
             if prob == 0:
                 n_zero += 1
             else:
@@ -134,8 +134,6 @@ def simulate(tree, env, n_sims=5):
     to the same length.
     """
     leaves = tree.leaf_dict
-    for leaf in leaves.values():
-        leaf.T = normalize_to_prob(leaf.T)
 
     all_regions = []
     all_actions = []
@@ -147,7 +145,7 @@ def simulate(tree, env, n_sims=5):
         while not leaf.terminal:
             regions.append(leaf.label)
             actions.append(leaf.action)
-            next_leaf = np.random.choice(len(leaves), p=leaf.T)
+            next_leaf = np.random.choice(len(leaves), p=tree.T[leaf.label])
             leaf = leaves[next_leaf]
 
         regions.append(leaf.label)

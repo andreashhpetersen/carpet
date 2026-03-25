@@ -277,7 +277,11 @@ def plot_tree_partition(
     print_labels = []
     for l in unique_labels:
         leaf = label2leaf[l]
-        print_labels.append(f'{leaf.label} (-> {leaf.next_region})')
+        if tree.T is not None and tree.T.ndim == 2:
+            next_reg = np.argmax(tree.T[leaf.label])
+            print_labels.append(f'{leaf.label} (-> {next_reg})')
+        else:
+            print_labels.append(f'{leaf.label}')
 
     patches = [Rectangle((0,0),1,1, color=label_to_color[lab]) for lab in unique_labels]
     ax.legend(patches, print_labels, title="leaf labels",
