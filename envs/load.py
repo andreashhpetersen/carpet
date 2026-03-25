@@ -11,5 +11,7 @@ def load_env(env_id, **env_kwargs):
         return gym.make(env_id, **env_kwargs)
     elif env_id == 'RandomWalk-v0':
         return gym.make(env_id, **env_kwargs)
+    elif env_id == 'CruiseControl-v0':
+        return gym.make(env_id, **env_kwargs)
     else:
         raise ValueError(f'env "{env_id}" not supported')
