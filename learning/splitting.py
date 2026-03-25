@@ -8,6 +8,12 @@ from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import PolynomialFeatures, StandardScaler, Normalizer
 
 
+def _entropy(p):
+    """Shannon entropy of a probability vector in nats, ignoring zero entries."""
+    p = p[p > 0]
+    return -np.sum(p * np.log(p))
+
+
 def characterize_clusters(points, clustering):
 
     # simple mean operation
@@ -83,7 +89,6 @@ def poly_log_reg(X, y, degree=1, plot=False, max_iter=200, thresh=0.95, max_degr
 
         # Early stop if we reach threshold
         if best_score >= thresh:
-            print(f"Reached threshold with degree {chosen_degree}, score {best_score:.3f}")
             break
 
     if best_score < thresh:
@@ -142,7 +147,12 @@ def split_on_action(tree, states, acts, mask, thresh=0.95, ratio_thresh=0.9):
 
                 preds = branch.pipe.predict(leaf.states)
                 # preds==1 side is majority action; preds==0 side is everything else
-                branch.left.action  = int(np.bincount(leaf.acts[preds == 0].astype(int)).argmax())
+                try:
+                    branch.left.action  = int(np.bincount(leaf.acts[preds == 0].astype(int)).argmax())
+                except ValueError:
+                    print("issue with argmaxing actions after split")
+                    import ipdb; ipdb.set_trace()
+
                 branch.right.action = majority
 
                 changed = True
@@ -329,7 +339,7 @@ def split_on_transition_unified(region2states, tree, acc_thresh=0.9, thresh_rati
     tree.reorder_leaf_labels()
 
 
-def split_on_transition(region2states, tree, thresh_ratio=0.05):
+def split_on_transition(region2states, tree, thresh_ratio=0.05, entropy_thresh=0.05):
     """
     For each region, check if the transition probabilities of the states in
     that region are different enough to warrant a split. If so, split the leaf
@@ -344,6 +354,11 @@ def split_on_transition(region2states, tree, thresh_ratio=0.05):
     - thresh_ratio: float in [0, 1] indicating the minimum ratio of the
         sizes of the new clusters to consider a split valid (e.g., if thresh_ratio=0.05,
         then the smaller cluster must have at least 5% of the points of the larger cluster)
+    - entropy_thresh: minimum reduction in Shannon entropy (nats) required to
+        commit a split. Compares the entropy of the region's aggregate transition
+        distribution to the weighted average entropy of the two post-split
+        cluster distributions. Splits that don't meaningfully reduce uncertainty
+        are skipped.
     """
     print('split leaves\n')
     leaves = tree.leaf_dict
@@ -385,7 +400,25 @@ def split_on_transition(region2states, tree, thresh_ratio=0.05):
             c1, c2 = [0], [1]
 
         ratio = min(sum(y == 0) / sum(y == 1), sum(y == 1) / sum(y == 0))
-        if ratio > thresh_ratio:
-            tree.split_leaf(points, y, leaf, thresh=0.9)
+        if ratio <= thresh_ratio:
+            continue
+
+        # Entropy reduction gate: only split if the two clusters have
+        # meaningfully more predictable transition distributions than the region as a whole.
+        n0, n1 = np.sum(y == 0), np.sum(y == 1)
+        mean0 = np.mean(probs[y == 0], axis=0)
+        mean1 = np.mean(probs[y == 1], axis=0)
+        mean_all = (n0 * mean0 + n1 * mean1) / (n0 + n1)
+
+        entropy_before = _entropy(mean_all)
+        entropy_after  = (n0 * _entropy(mean0) + n1 * _entropy(mean1)) / (n0 + n1)
+        reduction = entropy_before - entropy_after
+
+        print(f' Entropy reduction: {reduction:.4f}')
+        if reduction < entropy_thresh:
+            print(f'  Region {region}: skipping (entropy reduction={reduction:.4f} < {entropy_thresh})')
+            continue
+
+        tree.split_leaf(points, y, leaf, thresh=0.9)
 
     tree.reorder_leaf_labels()
