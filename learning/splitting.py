@@ -92,12 +92,16 @@ def poly_log_reg(X, y, degree=1, plot=False, max_iter=200, thresh=0.95, max_degr
     return best_pipe, best_score
 
 
-def split_on_action(tree, states, acts, mask, thresh=0.95):
+def split_on_action(tree, states, acts, mask, thresh=0.95, ratio_thresh=0.9):
     """
     Learn an initial mapping from regions to actions by splitting leaves that
-    have a mixed action distribution. For each leaf, if the actions taken in
-    that leaf are not all the same, split the leaf using `tree.split_leaf` and
-    assign the most common action in each new leaf.
+    have a mixed action distribution. Iterates until every leaf is action-pure
+    (or no further splits can be made), so it correctly handles any number of
+    actions.
+
+    Each iteration does a binary split: the majority action in a leaf is split
+    off from all other actions. This means a leaf with k distinct actions needs
+    at most k-1 splits to become pure.
 
     Parameters:
     - tree: the TreeObserver object to update with the learned action mapping
@@ -111,24 +115,38 @@ def split_on_action(tree, states, acts, mask, thresh=0.95):
     Returns:
     - None (the function updates the tree in place)
     """
-    tree.root.put(states[mask], acts=acts[mask])
+    changed = True
+    while changed:
+        changed = False
+        tree.root.put(states[mask], acts=acts[mask])
+        for leaf in tree.leaves():
+            if leaf.terminal:
+                continue
 
-    for leaf in tree.leaves():
-        if leaf.terminal:
-            continue
+            unique = np.unique(leaf.acts)
+            if len(unique) == 1:
+                leaf.action = unique.item()
+                continue
 
-        unique = np.unique(leaf.acts)
-        if len(unique) > 1:
-            leaf.action = None  # set attribute so split_leaf works
-            branch = tree.split_leaf(
-                leaf.states, leaf.acts, leaf, thresh=thresh
-            )
-            preds = branch.pipe.predict(leaf.states)
-            branch.left.action = int(np.bincount(leaf.acts[preds == 0].astype(int)).argmax())
-            branch.right.action = int(np.bincount(leaf.acts[preds == 1].astype(int)).argmax())
+            elif len(unique) > 1:
 
-        elif len(unique) == 1:
-            leaf.action = unique.item()
+                # Binary split: majority action vs everything else.
+                majority = int(np.bincount(leaf.acts.astype(int)).argmax())
+                y = (leaf.acts == majority).astype(int)
+
+                if sum(y) / len(y) > ratio_thresh:
+                    continue
+
+                leaf.action = None  # required by split_leaf
+                branch = tree.split_leaf(leaf.states, y, leaf, thresh=thresh)
+
+                preds = branch.pipe.predict(leaf.states)
+                # preds==1 side is majority action; preds==0 side is everything else
+                branch.left.action  = int(np.bincount(leaf.acts[preds == 0].astype(int)).argmax())
+                branch.right.action = majority
+
+                changed = True
+                break  # tree.leaves() is now stale — restart the loop
 
 
 def split_on_transition_tv(region2states, tree, tv_thresh=0.3, acc_thresh=0.7, thresh_ratio=0.05):
