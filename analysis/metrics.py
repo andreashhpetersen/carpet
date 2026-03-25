@@ -122,7 +122,7 @@ def evaluate(tree, obs, mask):
 
     avg_log_likelihood = total_log_likelihood / n_transitions if n_transitions > 0 else float('-inf')
     perplexity = np.exp(-avg_log_likelihood)
-    print(f"Average log likelihood: {avg_log_likelihood:.4f} | Perplexity: {perplexity:.4f} | Zero-prob transitions: {n_zero}/{n_transitions + n_zero}")
+    return avg_log_likelihood, perplexity, n_zero, n_transitions + n_zero
 
 
 def simulate(tree, env, n_sims=5):

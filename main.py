@@ -12,7 +12,7 @@ from models.policy import load_or_train_model
 from models.tree import TreeObserver, State
 from viz.plotting import plot_tree_partition
 
-from utils import pad_to_array, save_training_data, load_training_data
+from utils import pad_to_array, save_training_data, load_training_data, ResultsLogger
 
 
 
@@ -71,9 +71,9 @@ def get_transitions(tree, obs, mask, n_step=1):
 if __name__ == '__main__':
 
     # load config
-    config = load_config('random_walk')
+    # config = load_config('random_walk')
     # config = load_config('bouncing_ball')
-    # config = load_config('cruise_control')
+    config = load_config('cruise_control')
 
     model_name = config['model_name']
     env_id = config['env_id']
@@ -106,50 +106,52 @@ if __name__ == '__main__':
     if mark_terminal:
         tree.mark_terminal_states(obs, mask)
 
-    # learn initial action mapping
-    split_on_action(tree, obs, acts, mask, thresh=0.99, ratio_thresh=0.98)
-    tree.reorder_leaf_labels()
+    with ResultsLogger(model_dir, model_name) as logger:
 
-    if n_dims == 2:
-        plot_tree_partition(
-            tree,
-            title=f"{model_name} - Initial action mapping",
-            draw_boundaries=True,
-            points=obs, acts=acts, mask=mask,
-            save_dir='./data/figs/'
-        )
+        # learn initial action mapping
+        split_on_action(tree, obs, acts, mask, thresh=0.99, ratio_thresh=0.98)
+        tree.reorder_leaf_labels()
 
-    # prepare observations and make splits according to the NEXT action taken
-    # tree.split_for_action(obs, mask)
-    # tree.set_transition_scores(obs, mask)
+        logger.section('Initial action mapping')
+        logger.log(f'Regions: {tree.n_leaves}')
 
-    for i in range(rounds):
-        print(f"\nRound {i+1}")
-
-        # state sampling
-        region2states = sample_next_states(tree, env, obs, mask, n_samples=32)
-
-        # splitting
-        split_on_transition(region2states, tree)
-        print(f'Regions: {tree.n_leaves}')
-
-        # update transition scores
-        obs, acts, _, mask = load_training_data(model_dir)
-
-        tree.set_transition_scores(obs, mask, n_step=1)
-        evaluate(tree, obs, mask)
-        _, reg_precision_model = estimate_precision_model(tree.T, tree, env, model, n_runs=estimation_runs)
-        print(f'Precision (1 step, model acting): {reg_precision_model}')
-
-        n_step = 2
-        tree.set_transition_scores(obs, mask, n_step=n_step)
-        _, reg_precision_model = estimate_precision_model(tree.T, tree, env, model, n_step=n_step, n_runs=estimation_runs)
-        print(f'Precision ({n_step} step, model acting): {reg_precision_model}')
-
-        # plot the current tree
-        if i > -1 and n_dims == 2:
+        if n_dims == 2:
             plot_tree_partition(
-                tree, draw_boundaries=False,
-                # points=obs, acts=acts, mask=mask,
-                title=f"{model_name} unified_Round {i+1}", save_dir='./data/figs/'
+                tree,
+                title=f"{model_name} - Initial action mapping",
+                draw_boundaries=True,
+                points=obs, acts=acts, mask=mask,
+                save_dir='./data/figs/'
             )
+
+        for i in range(rounds):
+            logger.section(f'Round {i+1}')
+
+            # state sampling
+            region2states = sample_next_states(tree, env, obs, mask, n_samples=32)
+
+            # splitting
+            split_on_transition(region2states, tree)
+            logger.log(f'Regions: {tree.n_leaves}')
+
+            # update transition scores
+            obs, acts, _, mask = load_training_data(model_dir)
+
+            tree.set_transition_scores(obs, mask, n_step=1)
+            ll, perp, n_zero, n_total = evaluate(tree, obs, mask)
+            logger.log(f'Log likelihood: {ll:.4f} | Perplexity: {perp:.4f} | Zero-prob transitions: {n_zero}/{n_total}')
+
+            _, reg_precision_model = estimate_precision_model(tree.T, tree, env, model, n_runs=estimation_runs)
+            logger.log(f'Precision (1 step, model acting): {reg_precision_model:.4f}')
+
+            n_step = 2
+            tree.set_transition_scores(obs, mask, n_step=n_step)
+            _, reg_precision_model = estimate_precision_model(tree.T, tree, env, model, n_step=n_step, n_runs=estimation_runs)
+            logger.log(f'Precision ({n_step} step, model acting): {reg_precision_model:.4f}')
+
+            # plot the current tree
+            if n_dims == 2:
+                plot_tree_partition(
+                    tree, draw_boundaries=False,
+                    title=f"{model_name} unified_Round {i+1}", save_dir='./data/figs/'
+                )

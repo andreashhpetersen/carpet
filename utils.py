@@ -1,5 +1,6 @@
 import numpy as np
-
+import os
+from datetime import datetime
 from glob import glob
 
 
@@ -68,6 +69,36 @@ def normalize_to_prob(P, axis=-1, eps=1e-12):
     P = np.array(P, dtype=float)
     sums = P.sum(axis=axis, keepdims=True)
     return P / (sums + eps)
+
+
+class ResultsLogger:
+    """
+    Writes results to a per-model markdown file under data/results/ while
+    also printing to stdout. Use log() for result lines and section() for
+    headings.
+    """
+    def __init__(self, model_dir, model_name):
+        path = f'./data/results/{model_dir}.md'
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        self._file = open(path, 'a')
+        self.log(f'\n# {model_name} — {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}')
+
+    def section(self, title):
+        self.log(f'\n## {title}')
+
+    def log(self, msg):
+        print(msg)
+        self._file.write(msg + '\n')
+        self._file.flush()
+
+    def close(self):
+        self._file.close()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        self.close()
 
 
 ### Agent data generation and saving/loading utilities
