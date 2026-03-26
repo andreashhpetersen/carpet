@@ -71,9 +71,9 @@ def get_transitions(tree, obs, mask, n_step=1):
 if __name__ == '__main__':
 
     # load config
-    # config = load_config('random_walk')
+    config = load_config('random_walk')
     # config = load_config('bouncing_ball')
-    config = load_config('cruise_control')
+    # config = load_config('cruise_control')
 
     model_name = config['model_name']
     env_id = config['env_id']
@@ -90,6 +90,7 @@ if __name__ == '__main__':
     rounds = config['rounds']
     n_dims = config['n_dims']
     n_acts = config['n_acts']
+    laplace = config.get('laplace', 0.0)
 
     # load environment and model, and generate training data
     env = load_env(env_id)
@@ -137,7 +138,7 @@ if __name__ == '__main__':
             # update transition scores
             obs, acts, _, mask = load_training_data(model_dir)
 
-            tree.set_transition_scores(obs, mask, n_step=1)
+            tree.set_transition_scores(obs, mask, n_step=1, laplace=laplace)
             ll, perp, n_zero, n_total = evaluate(tree, obs, mask)
             logger.log(f'Log likelihood: {ll:.4f} | Perplexity: {perp:.4f} | Zero-prob transitions: {n_zero}/{n_total}')
 
@@ -145,7 +146,7 @@ if __name__ == '__main__':
             logger.log(f'Precision (1 step, model acting): {reg_precision_model:.4f}')
 
             n_step = 2
-            tree.set_transition_scores(obs, mask, n_step=n_step)
+            tree.set_transition_scores(obs, mask, n_step=n_step, laplace=laplace)
             _, reg_precision_model = estimate_precision_model(tree.T, tree, env, model, n_step=n_step, n_runs=estimation_runs)
             logger.log(f'Precision ({n_step} step, model acting): {reg_precision_model:.4f}')
 

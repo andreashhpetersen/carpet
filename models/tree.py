@@ -181,7 +181,7 @@ class TreeObserver:
                 stack.append(node.right)
                 stack.append(node.left)
 
-    def set_transition_scores(self, states, mask, n_step=1):
+    def set_transition_scores(self, states, mask, n_step=1, laplace=0.0):
         """
         Compute the n_step-step transition matrix and store it as tree.T.
 
@@ -189,6 +189,14 @@ class TreeObserver:
         tree.T[r_0, r_1, ..., r_{n_step}] is the probability of visiting
         region r_{n_step} given that the trajectory passed through
         r_0, r_1, ..., r_{n_step-1}. Normalized along the last axis.
+
+        Parameters
+        ----------
+        laplace : float
+            Laplace smoothing parameter. Added to all counts before
+            normalisation. Rows with few observations are pulled toward
+            uniform; well-estimated rows are barely affected. Default 0
+            (no smoothing).
         """
         if len(states.shape) == 3:
             states = states.reshape(-1, states.shape[-1])
@@ -196,7 +204,7 @@ class TreeObserver:
 
         leaves = self.leaf_dict
         labels = self.get_labels(states)
-        T = np.zeros((self.n_leaves,) * (n_step + 1))
+        T = np.full((self.n_leaves,) * (n_step + 1), laplace)
 
         for i in range(len(mask) - n_step):
             if not all(mask[i:i + n_step + 1]):

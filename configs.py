@@ -33,7 +33,8 @@ def random_walk_config():
         'estimation_runs': 100,
         'rounds': 15,
         'n_dims': 2,
-        'n_acts': 2
+        'n_acts': 2,
+        'laplace': 0.5
     }
 
 def cruise_control_config():
