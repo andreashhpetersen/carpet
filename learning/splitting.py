@@ -339,6 +339,108 @@ def split_on_transition_unified(region2states, tree, acc_thresh=0.9, thresh_rati
     tree.reorder_leaf_labels()
 
 
+def compute_heterogeneity(states):
+    """
+    Within-region heterogeneity: mean TV distance between each state's
+    transition vector and the region's mean transition vector.
+
+    Returns 0 if fewer than 2 states.
+    """
+    if len(states) < 2:
+        return 0.0
+    probs = np.array([s.trans_prob for s in states])
+    mean = np.mean(probs, axis=0)
+    tv_distances = 0.5 * np.sum(np.abs(probs - mean), axis=1)
+    return float(np.mean(tv_distances))
+
+
+def split_on_transition_guided(region2states, tree, het_thresh=0.1,
+                                thresh_ratio=0.05, entropy_thresh=0.05):
+    """
+    Heterogeneity-guided transition splitting.
+
+    Computes within-region heterogeneity (mean TV distance from region mean)
+    for every region, then attempts splits only for regions above het_thresh,
+    processing them in order of decreasing heterogeneity.
+
+    Uses the same clustering logic as split_on_transition (deterministic
+    target groups determine k, entropy reduction gate filters weak splits).
+
+    Parameters
+    ----------
+    het_thresh : float
+        Minimum heterogeneity required to attempt a split.
+    thresh_ratio : float
+        Minimum ratio of smaller to larger cluster size.
+    entropy_thresh : float
+        Minimum entropy reduction (nats) required to commit a split.
+
+    Returns
+    -------
+    n_splits : int
+        Number of splits made.
+    het_scores : dict
+        Heterogeneity score per region index.
+    """
+    print('split leaves (guided)\n')
+    leaves = tree.leaf_dict
+
+    # Compute heterogeneity for all regions.
+    het_scores = {}
+    for region, states in enumerate(region2states):
+        if len(states) < 10 or leaves[region].terminal:
+            het_scores[region] = 0.0
+        else:
+            het_scores[region] = compute_heterogeneity(states)
+
+    # Process in order of decreasing heterogeneity.
+    ordered = sorted(het_scores.items(), key=lambda x: x[1], reverse=True)
+
+    n_splits = 0
+    for region, het in ordered:
+        if het < het_thresh:
+            break  # remaining regions are all below threshold
+
+        states = region2states[region]
+        leaf = leaves[region]
+        probs = np.array([s.trans_prob for s in states])
+        points = np.array([s.point for s in states])
+
+        det_groups = get_deterministic_args(probs)
+        n_clusters = len(det_groups)
+        if n_clusters <= 1:
+            continue
+
+        clustering = AgglomerativeClustering(n_clusters=n_clusters).fit_predict(probs)
+
+        if n_clusters > 2:
+            clust_data = characterize_clusters(points, clustering)
+            clust2 = AgglomerativeClustering(n_clusters=2).fit_predict(clust_data)
+            c2 = np.argwhere(clust2 == 1)
+            y = np.zeros_like(clustering)
+            y[np.isin(clustering, c2)] = 1
+        else:
+            y = clustering
+
+        n0, n1 = np.sum(y == 0), np.sum(y == 1)
+        if min(n0, n1) / max(n0, n1) <= thresh_ratio:
+            continue
+
+        mean0 = np.mean(probs[y == 0], axis=0)
+        mean1 = np.mean(probs[y == 1], axis=0)
+        mean_all = (n0 * mean0 + n1 * mean1) / (n0 + n1)
+        reduction = _entropy(mean_all) - (n0 * _entropy(mean0) + n1 * _entropy(mean1)) / (n0 + n1)
+        if reduction < entropy_thresh:
+            print(f'  Region {region} (het={het:.3f}): skipping (entropy reduction={reduction:.4f})')
+            continue
+
+        tree.split_leaf(points, y, leaf, thresh=0.9)
+        n_splits += 1
+
+    tree.reorder_leaf_labels()
+    return n_splits, het_scores
+
+
 def split_on_transition(region2states, tree, thresh_ratio=0.05, entropy_thresh=0.05):
     """
     For each region, check if the transition probabilities of the states in
