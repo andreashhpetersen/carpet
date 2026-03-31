@@ -74,9 +74,10 @@ if __name__ == '__main__':
             )
 
         het_thresh = config.get('het_thresh', 0.1)
+        propagate = False
 
         run_description = (
-            "Heterogeneity-guided splitting with propagate=True. "
+            f"Stochastic fallback when no det groups - propagate={propagate}. "
             f"het_thresh={het_thresh}, laplace={laplace}."
         )
         csv_logger = CSVLogger(
@@ -84,7 +85,7 @@ if __name__ == '__main__':
             config_dict={
                 'het_thresh': het_thresh,
                 'laplace': laplace,
-                'propagate': True,
+                'propagate': propagate,
                 'n_samples': 32,
                 'estimation_runs': estimation_runs,
             },
@@ -100,7 +101,7 @@ if __name__ == '__main__':
             n_dims=n_dims,
             model_name=model_name,
             save_dir='./data/figs/',
-            propagate=True,
+            propagate=propagate,
             csv_logger=csv_logger,
         )
         csv_logger.close()

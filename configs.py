@@ -15,7 +15,8 @@ def bouncing_ball_config():
         'rounds': 2,
         'n_dims': 2,
         'n_acts': 2,
-        'het_thresh': 0.1
+        'het_thresh': 0.1,
+        'laplace': 0.5
     }
 
 def random_walk_config():
