@@ -355,18 +355,23 @@ def compute_heterogeneity(states):
     return float(np.mean(tv_distances))
 
 
-def _attempt_split(region, region2states, tree, thresh_ratio, entropy_thresh):
+def _attempt_split(region, region2states, tree, thresh_ratio, entropy_thresh, gate_counts):
     """
     Try to split `region`. Returns True if a split was committed, False otherwise.
     Assumes the caller has already verified het > het_thresh.
     Does NOT call reorder_leaf_labels.
+
+    gate_counts is a dict with keys 'min_samples', 'terminal', 'no_det_groups',
+    'balance', 'entropy', 'split' — incremented in place to track why splits are blocked.
     """
     leaves = tree.leaf_dict
     if region not in leaves or leaves[region].terminal:
+        gate_counts['terminal'] += 1
         return False
 
     states = region2states[region]
     if len(states) < 10:
+        gate_counts['min_samples'] += 1
         return False
 
     leaf = leaves[region]
@@ -376,6 +381,7 @@ def _attempt_split(region, region2states, tree, thresh_ratio, entropy_thresh):
     det_groups = get_deterministic_args(probs)
     n_clusters = len(det_groups)
     if n_clusters <= 1:
+        gate_counts['no_det_groups'] += 1
         return False
 
     clustering = AgglomerativeClustering(n_clusters=n_clusters).fit_predict(probs)
@@ -391,6 +397,7 @@ def _attempt_split(region, region2states, tree, thresh_ratio, entropy_thresh):
 
     n0, n1 = np.sum(y == 0), np.sum(y == 1)
     if min(n0, n1) / max(n0, n1) <= thresh_ratio:
+        gate_counts['balance'] += 1
         return False
 
     mean0 = np.mean(probs[y == 0], axis=0)
@@ -398,10 +405,11 @@ def _attempt_split(region, region2states, tree, thresh_ratio, entropy_thresh):
     mean_all = (n0 * mean0 + n1 * mean1) / (n0 + n1)
     reduction = _entropy(mean_all) - (n0 * _entropy(mean0) + n1 * _entropy(mean1)) / (n0 + n1)
     if reduction < entropy_thresh:
-        print(f'  Region {region} (entropy reduction={reduction:.4f} < {entropy_thresh}): skipping')
+        gate_counts['entropy'] += 1
         return False
 
     tree.split_leaf(points, y, leaf, thresh=0.9)
+    gate_counts['split'] += 1
     return True
 
 
@@ -491,9 +499,15 @@ def split_on_transition_guided(region2states, tree, het_thresh=0.1,
     het_scores : dict
         Heterogeneity score per region index (values updated during propagation
         if propagate=True).
+    gate_counts : dict
+        Number of times each gate blocked a split attempt, plus 'split' for
+        successful splits. Keys: 'terminal', 'min_samples', 'no_det_groups',
+        'balance', 'entropy', 'split'.
     """
     print('split leaves (guided)\n')
     leaves = tree.leaf_dict
+    gate_counts = {'terminal': 0, 'min_samples': 0, 'no_det_groups': 0,
+                   'balance': 0, 'entropy': 0, 'split': 0}
 
     # Compute initial heterogeneity for all regions.
     het_scores = {}
@@ -521,7 +535,7 @@ def split_on_transition_guided(region2states, tree, het_thresh=0.1,
             continue
 
         old_n = tree.n_leaves
-        split_happened = _attempt_split(region, region2states, tree, thresh_ratio, entropy_thresh)
+        split_happened = _attempt_split(region, region2states, tree, thresh_ratio, entropy_thresh, gate_counts)
 
         if split_happened:
             n_splits += 1
@@ -546,7 +560,7 @@ def split_on_transition_guided(region2states, tree, het_thresh=0.1,
                 _propagate_split(region, region2states, tree, old_n, het_thresh, het_scores, heap)
 
     tree.reorder_leaf_labels()
-    return n_splits, het_scores
+    return n_splits, het_scores, gate_counts
 
 
 def split_on_transition(region2states, tree, thresh_ratio=0.05, entropy_thresh=0.05):
