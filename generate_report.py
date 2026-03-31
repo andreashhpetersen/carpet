@@ -56,20 +56,19 @@ def load_runs(env_filter=None):
     return runs
 
 
-def plot_metric(env_name, runs, col, ylabel, fig_path):
+def plot_metric(env_name, runs_with_labels, col, ylabel, fig_path):
     fig, ax = plt.subplots(figsize=(6, 4))
-    for meta, rows in runs:
+    for label, (meta, rows) in runs_with_labels:
         xs = [int(r['round']) for r in rows if r[col] not in ('', 'None')]
         ys = [float(r[col]) for r in rows if r[col] not in ('', 'None')]
         if not xs:
             continue
-        label = meta['description'][:60]  # truncate long labels
         ax.plot(xs, ys, marker='o', markersize=3, label=label)
     ax.set_xlabel('Round')
     ax.set_ylabel(ylabel)
     ax.set_title(f'{env_name} — {ylabel}')
-    if len(runs) > 1:
-        ax.legend(fontsize=7, loc='best')
+    if len(runs_with_labels) > 1:
+        ax.legend(fontsize=9, loc='best')
     fig.tight_layout()
     os.makedirs(os.path.dirname(fig_path), exist_ok=True)
     fig.savefig(fig_path)
@@ -120,19 +119,23 @@ def generate_report(env_filter=None):
     for env_name, runs in sorted(by_env.items()):
         body = f'\\section{{{escape_latex(env_name)}}}\n\n'
 
-        # Per-run description table
+        # Assign a short letter label to each run
+        letters = [chr(ord('A') + i) for i in range(len(runs))]
+        runs_with_labels = list(zip(letters, runs))
+
+        # Per-run description list with letter keys
         body += '\\subsection*{Run descriptions}\n\\begin{itemize}\n'
-        for meta, _ in runs:
+        for letter, (meta, _) in runs_with_labels:
             desc = escape_latex(meta['description'])
             rid = format_run_id(meta['run_id'])
-            body += f'  \\item {rid}: {desc}\n'
+            body += f'  \\item \\textbf{{{letter}}} ({rid}): {desc}\n'
         body += '\\end{itemize}\n\n'
 
         # One figure per metric
         body += '\\subsection*{Metrics}\n'
         for col, ylabel, short in METRICS:
             fig_path = f'{FIG_DIR}/{env_name}_{col}.pdf'
-            plot_metric(env_name, runs, col, ylabel, fig_path)
+            plot_metric(env_name, runs_with_labels, col, ylabel, fig_path)
             caption = f'{ylabel} over rounds for \\texttt{{{escape_latex(env_name)}}}.'
             body += make_latex_figure(fig_path, caption) + '\n'
 
