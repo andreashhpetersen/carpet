@@ -1,3 +1,4 @@
+import heapq
 import numpy as np
 
 from sklearn.cluster import AgglomerativeClustering
@@ -354,8 +355,111 @@ def compute_heterogeneity(states):
     return float(np.mean(tv_distances))
 
 
+def _attempt_split(region, region2states, tree, thresh_ratio, entropy_thresh):
+    """
+    Try to split `region`. Returns True if a split was committed, False otherwise.
+    Assumes the caller has already verified het > het_thresh.
+    Does NOT call reorder_leaf_labels.
+    """
+    leaves = tree.leaf_dict
+    if region not in leaves or leaves[region].terminal:
+        return False
+
+    states = region2states[region]
+    if len(states) < 10:
+        return False
+
+    leaf = leaves[region]
+    probs = np.array([s.trans_prob for s in states])
+    points = np.array([s.point for s in states])
+
+    det_groups = get_deterministic_args(probs)
+    n_clusters = len(det_groups)
+    if n_clusters <= 1:
+        return False
+
+    clustering = AgglomerativeClustering(n_clusters=n_clusters).fit_predict(probs)
+
+    if n_clusters > 2:
+        clust_data = characterize_clusters(points, clustering)
+        clust2 = AgglomerativeClustering(n_clusters=2).fit_predict(clust_data)
+        c2 = np.argwhere(clust2 == 1)
+        y = np.zeros_like(clustering)
+        y[np.isin(clustering, c2)] = 1
+    else:
+        y = clustering
+
+    n0, n1 = np.sum(y == 0), np.sum(y == 1)
+    if min(n0, n1) / max(n0, n1) <= thresh_ratio:
+        return False
+
+    mean0 = np.mean(probs[y == 0], axis=0)
+    mean1 = np.mean(probs[y == 1], axis=0)
+    mean_all = (n0 * mean0 + n1 * mean1) / (n0 + n1)
+    reduction = _entropy(mean_all) - (n0 * _entropy(mean0) + n1 * _entropy(mean1)) / (n0 + n1)
+    if reduction < entropy_thresh:
+        print(f'  Region {region} (entropy reduction={reduction:.4f} < {entropy_thresh}): skipping')
+        return False
+
+    tree.split_leaf(points, y, leaf, thresh=0.9)
+    return True
+
+
+def _propagate_split(region, region2states, tree, old_n, het_thresh, het_scores, heap):
+    """
+    After splitting `region` (label `r`), propagate induced heterogeneity to
+    neighbouring regions.
+
+    When split_leaf is called on label `r`:
+      - left child keeps label `r`
+      - right child gets label `old_n` (= tree.n_leaves - 1 after the split)
+
+    Assumes the caller has already partitioned region2states[region] into left-
+    child states and appended the right-child states at region2states[old_n].
+
+    For any state s in region Q whose next_states previously mapped to `r`,
+    some of those next_states may now map to `old_n`. We re-label them,
+    recompute trans_prob, then recheck Q's heterogeneity.
+
+    States in regions that never transitioned to `r` just have their trans_prob
+    vector extended by one zero to stay consistent with the new tree size.
+    """
+    new_n = tree.n_leaves   # = old_n + 1
+
+    affected = set()
+    for q, q_states in enumerate(region2states):
+        if q == region or q == old_n:
+            continue
+        q_affected = False
+        for s in q_states:
+            if region in s.next_regions:
+                s.next_regions = tree.get_labels(s.next_states)
+                s.make_transition_probability_vector(new_n)
+                q_affected = True
+            else:
+                # Extend the vector; no transitions went to the split region.
+                s.trans_prob = np.append(s.trans_prob, 0.0)
+        if q_affected:
+            affected.add(q)
+
+    # Update trans_prob for the two new child regions as well (self-loops).
+    for q in (region, old_n):
+        for s in region2states[q]:
+            s.next_regions = tree.get_labels(s.next_states)
+            s.make_transition_probability_vector(new_n)
+
+    # Recompute het for affected regions and push to heap if above threshold.
+    for q in affected:
+        new_het = compute_heterogeneity(region2states[q])
+        het_scores[q] = new_het
+        if new_het >= het_thresh:
+            heapq.heappush(heap, (-new_het, q))
+            print(f'  Propagated: region {q} induced het={new_het:.3f}')
+
+
 def split_on_transition_guided(region2states, tree, het_thresh=0.1,
-                                thresh_ratio=0.05, entropy_thresh=0.05):
+                                thresh_ratio=0.05, entropy_thresh=0.05,
+                                propagate=False):
     """
     Heterogeneity-guided transition splitting.
 
@@ -374,18 +478,24 @@ def split_on_transition_guided(region2states, tree, het_thresh=0.1,
         Minimum ratio of smaller to larger cluster size.
     entropy_thresh : float
         Minimum entropy reduction (nats) required to commit a split.
+    propagate : bool
+        If True, after each split re-evaluate heterogeneity for all regions
+        that transitioned into the just-split region, and add newly
+        heterogeneous regions to the work queue within the same round.
+        This catches induced heterogeneity without waiting for the next round.
 
     Returns
     -------
     n_splits : int
         Number of splits made.
     het_scores : dict
-        Heterogeneity score per region index.
+        Heterogeneity score per region index (values updated during propagation
+        if propagate=True).
     """
     print('split leaves (guided)\n')
     leaves = tree.leaf_dict
 
-    # Compute heterogeneity for all regions.
+    # Compute initial heterogeneity for all regions.
     het_scores = {}
     for region, states in enumerate(region2states):
         if len(states) < 10 or leaves[region].terminal:
@@ -393,49 +503,47 @@ def split_on_transition_guided(region2states, tree, het_thresh=0.1,
         else:
             het_scores[region] = compute_heterogeneity(states)
 
-    # Process in order of decreasing heterogeneity.
-    ordered = sorted(het_scores.items(), key=lambda x: x[1], reverse=True)
+    # Max-heap via negation. Each entry is (-het, region).
+    # het_scores is the source of truth: an entry is stale if its het value
+    # no longer matches het_scores[region].
+    heap = [(-het, r) for r, het in het_scores.items() if het >= het_thresh]
+    heapq.heapify(heap)
 
     n_splits = 0
-    for region, het in ordered:
+    while heap:
+        neg_het, region = heapq.heappop(heap)
+        het = -neg_het
+
+        # Skip stale entries (het_scores may have been updated by propagation).
+        if abs(het_scores.get(region, 0.0) - het) > 1e-9:
+            continue
         if het < het_thresh:
-            break  # remaining regions are all below threshold
-
-        states = region2states[region]
-        leaf = leaves[region]
-        probs = np.array([s.trans_prob for s in states])
-        points = np.array([s.point for s in states])
-
-        det_groups = get_deterministic_args(probs)
-        n_clusters = len(det_groups)
-        if n_clusters <= 1:
             continue
 
-        clustering = AgglomerativeClustering(n_clusters=n_clusters).fit_predict(probs)
+        old_n = tree.n_leaves
+        split_happened = _attempt_split(region, region2states, tree, thresh_ratio, entropy_thresh)
 
-        if n_clusters > 2:
-            clust_data = characterize_clusters(points, clustering)
-            clust2 = AgglomerativeClustering(n_clusters=2).fit_predict(clust_data)
-            c2 = np.argwhere(clust2 == 1)
-            y = np.zeros_like(clustering)
-            y[np.isin(clustering, c2)] = 1
-        else:
-            y = clustering
+        if split_happened:
+            n_splits += 1
+            # Partition region2states[region] into left/right child states.
+            # Left child keeps label `region`; right child has label `old_n`.
+            # This must happen before propagation so future het computations
+            # for region (now left child only) don't see the mixed state set.
+            src_states = region2states[region]
+            if src_states:
+                point_labels = tree.get_labels(np.array([s.point for s in src_states]))
+                region2states[region] = [s for s, l in zip(src_states, point_labels) if l == region]
+                region2states.append([s for s, l in zip(src_states, point_labels) if l == old_n])
+            else:
+                region2states.append([])
 
-        n0, n1 = np.sum(y == 0), np.sum(y == 1)
-        if min(n0, n1) / max(n0, n1) <= thresh_ratio:
-            continue
+            # Update het_scores for both children so stale high-het entries
+            # for `region` in the heap are superseded.
+            het_scores[region] = compute_heterogeneity(region2states[region])
+            het_scores[old_n]  = compute_heterogeneity(region2states[old_n])
 
-        mean0 = np.mean(probs[y == 0], axis=0)
-        mean1 = np.mean(probs[y == 1], axis=0)
-        mean_all = (n0 * mean0 + n1 * mean1) / (n0 + n1)
-        reduction = _entropy(mean_all) - (n0 * _entropy(mean0) + n1 * _entropy(mean1)) / (n0 + n1)
-        if reduction < entropy_thresh:
-            print(f'  Region {region} (het={het:.3f}): skipping (entropy reduction={reduction:.4f})')
-            continue
-
-        tree.split_leaf(points, y, leaf, thresh=0.9)
-        n_splits += 1
+            if propagate:
+                _propagate_split(region, region2states, tree, old_n, het_thresh, het_scores, heap)
 
     tree.reorder_leaf_labels()
     return n_splits, het_scores
