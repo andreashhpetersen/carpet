@@ -13,7 +13,7 @@ from models.tree import TreeObserver
 from pipeline import run_carpet, run_carpet_fixed, sample_next_states
 from viz.plotting import plot_tree_partition
 
-from utils import pad_to_array, save_training_data, load_training_data, ResultsLogger
+from utils import pad_to_array, save_training_data, load_training_data, ResultsLogger, CSVLogger
 
 
 if __name__ == '__main__':
@@ -74,6 +74,23 @@ if __name__ == '__main__':
             )
 
         het_thresh = config.get('het_thresh', 0.1)
+
+        run_description = (
+            "Heterogeneity-guided splitting with propagate=True. "
+            f"het_thresh={het_thresh}, laplace={laplace}."
+        )
+        csv_logger = CSVLogger(
+            env_name=model_name,
+            config_dict={
+                'het_thresh': het_thresh,
+                'laplace': laplace,
+                'propagate': True,
+                'n_samples': 32,
+                'estimation_runs': estimation_runs,
+            },
+            description=run_description,
+        )
+
         run_carpet(
             tree, env, model, logger, model_dir,
             het_thresh=het_thresh,
@@ -83,7 +100,10 @@ if __name__ == '__main__':
             n_dims=n_dims,
             model_name=model_name,
             save_dir='./data/figs/',
+            propagate=True,
+            csv_logger=csv_logger,
         )
+        csv_logger.close()
         # run_carpet_fixed(
         #     tree, env, model, logger, model_dir,
         #     rounds=rounds,

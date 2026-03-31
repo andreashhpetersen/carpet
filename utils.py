@@ -1,3 +1,5 @@
+import csv
+import json
 import numpy as np
 import os
 from datetime import datetime
@@ -89,6 +91,46 @@ class ResultsLogger:
     def log(self, msg):
         print(msg)
         self._file.write(msg + '\n')
+        self._file.flush()
+
+    def close(self):
+        self._file.close()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        self.close()
+
+
+class CSVLogger:
+    """
+    Writes per-round metrics to a CSV file and a companion JSON metadata file.
+
+    Files are saved to data/results/csv/{env_name}_{run_id}.{csv,json}.
+    The description string should explain what is new or special about this run.
+    """
+    COLUMNS = ['round', 'n_regions', 'n_splits', 'het_max', 'het_mean',
+               'll', 'perplexity', 'n_zero', 'n_total', 'prec_1step', 'prec_2step']
+
+    def __init__(self, env_name, config_dict, description, run_id=None):
+        if run_id is None:
+            run_id = datetime.now().strftime('%Y%m%d_%H%M%S')
+        self.run_id = run_id
+        os.makedirs('./data/results/csv', exist_ok=True)
+        base = f'./data/results/csv/{env_name}_{run_id}'
+        with open(base + '.json', 'w') as f:
+            json.dump({'run_id': run_id, 'env': env_name,
+                       'config': config_dict, 'description': description}, f, indent=2)
+        self._file = open(base + '.csv', 'w', newline='')
+        self._writer = csv.writer(self._file)
+        self._writer.writerow(self.COLUMNS)
+
+    def log_round(self, round_num, n_regions, n_splits=None, het_max=None, het_mean=None,
+                  ll=None, perplexity=None, n_zero=None, n_total=None,
+                  prec_1step=None, prec_2step=None):
+        self._writer.writerow([round_num, n_regions, n_splits, het_max, het_mean,
+                                ll, perplexity, n_zero, n_total, prec_1step, prec_2step])
         self._file.flush()
 
     def close(self):
