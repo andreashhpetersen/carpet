@@ -355,8 +355,7 @@ def compute_heterogeneity(states):
     return float(np.mean(tv_distances))
 
 
-def _attempt_split(region, region2states, tree, thresh_ratio, entropy_thresh, gate_counts,
-                   stochastic_tv_thresh=0.15):
+def _attempt_split(region, region2states, tree, thresh_ratio, entropy_thresh, gate_counts):
     """
     Try to split `region`. Returns True if a split was committed, False otherwise.
     Assumes the caller has already verified het > het_thresh.
@@ -364,10 +363,6 @@ def _attempt_split(region, region2states, tree, thresh_ratio, entropy_thresh, ga
 
     gate_counts is a dict with keys 'min_samples', 'terminal', 'no_det_groups',
     'balance', 'entropy', 'split' — incremented in place to track why splits are blocked.
-
-    When no deterministic target groups exist (fully stochastic region), falls back
-    to k=2 clustering in probability space, gated by TV distance between cluster means.
-    stochastic_tv_thresh sets the minimum TV distance required to proceed in this fallback.
     """
     leaves = tree.leaf_dict
     if region not in leaves or leaves[region].terminal:
@@ -385,28 +380,20 @@ def _attempt_split(region, region2states, tree, thresh_ratio, entropy_thresh, ga
 
     det_groups = get_deterministic_args(probs)
     n_clusters = len(det_groups)
+    if n_clusters <= 1:
+        gate_counts['no_det_groups'] += 1
+        return False
 
-    if n_clusters > 1:
-        # Deterministic path: use det structure to determine k.
-        clustering = AgglomerativeClustering(n_clusters=n_clusters).fit_predict(probs)
-        if n_clusters > 2:
-            clust_data = characterize_clusters(points, clustering)
-            clust2 = AgglomerativeClustering(n_clusters=2).fit_predict(clust_data)
-            c2 = np.argwhere(clust2 == 1)
-            y = np.zeros_like(clustering)
-            y[np.isin(clustering, c2)] = 1
-        else:
-            y = clustering
+    clustering = AgglomerativeClustering(n_clusters=n_clusters).fit_predict(probs)
+
+    if n_clusters > 2:
+        clust_data = characterize_clusters(points, clustering)
+        clust2 = AgglomerativeClustering(n_clusters=2).fit_predict(clust_data)
+        c2 = np.argwhere(clust2 == 1)
+        y = np.zeros_like(clustering)
+        y[np.isin(clustering, c2)] = 1
     else:
-        # Stochastic fallback: k=2 clustering in probability space.
-        y = AgglomerativeClustering(n_clusters=2).fit_predict(probs)
-        n0, n1 = np.sum(y == 0), np.sum(y == 1)
-        mean0 = np.mean(probs[y == 0], axis=0)
-        mean1 = np.mean(probs[y == 1], axis=0)
-        tv = 0.5 * np.sum(np.abs(mean0 - mean1))
-        if tv < stochastic_tv_thresh:
-            gate_counts['no_det_groups'] += 1
-            return False
+        y = clustering
 
     n0, n1 = np.sum(y == 0), np.sum(y == 1)
     if min(n0, n1) / max(n0, n1) <= thresh_ratio:
@@ -480,7 +467,7 @@ def _propagate_split(region, region2states, tree, old_n, het_thresh, het_scores,
 
 def split_on_transition_guided(region2states, tree, het_thresh=0.1,
                                 thresh_ratio=0.05, entropy_thresh=0.05,
-                                stochastic_tv_thresh=0.15, propagate=False):
+                                propagate=False):
     """
     Heterogeneity-guided transition splitting.
 
@@ -499,10 +486,6 @@ def split_on_transition_guided(region2states, tree, het_thresh=0.1,
         Minimum ratio of smaller to larger cluster size.
     entropy_thresh : float
         Minimum entropy reduction (nats) required to commit a split.
-    stochastic_tv_thresh : float
-        For fully stochastic regions (no deterministic target groups), minimum
-        TV distance between the two k=2 cluster means required to proceed.
-        Prevents splits where both clusters transition similarly despite high het.
     propagate : bool
         If True, after each split re-evaluate heterogeneity for all regions
         that transitioned into the just-split region, and add newly
@@ -552,8 +535,7 @@ def split_on_transition_guided(region2states, tree, het_thresh=0.1,
             continue
 
         old_n = tree.n_leaves
-        split_happened = _attempt_split(region, region2states, tree, thresh_ratio, entropy_thresh, gate_counts,
-                                        stochastic_tv_thresh=stochastic_tv_thresh)
+        split_happened = _attempt_split(region, region2states, tree, thresh_ratio, entropy_thresh, gate_counts)
 
         if split_happened:
             n_splits += 1
