@@ -309,7 +309,8 @@ def plot_tree_partition(
         for sc in scatter_artists:
             sc.set_sizes(np.full(len(sc.get_offsets()), point_size))
 
-    plt.show()
+    if save_dir is None:
+        plt.show()
     plt.close()
 
 
