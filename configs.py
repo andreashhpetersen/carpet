@@ -16,7 +16,7 @@ def bouncing_ball_config():
         'n_dims': 2,
         'n_acts': 2,
         'het_thresh': 0.1,
-        'laplace': 0.5
+        'laplace': 0.0
     }
 
 def random_walk_config():
@@ -57,7 +57,8 @@ def cruise_control_config():
         'estimation_runs': 50,
         'rounds': 3,
         'n_dims': 3,
-        'n_acts': 3
+        'n_acts': 3,
+        'laplace': 0.1
     }
 
 

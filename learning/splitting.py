@@ -467,7 +467,8 @@ def _propagate_split(region, region2states, tree, old_n, het_thresh, het_scores,
 
 def split_on_transition_guided(region2states, tree, het_thresh=0.1,
                                 thresh_ratio=0.05, entropy_thresh=0.05,
-                                propagate=False):
+                                propagate=False,
+                                max_regions=200):
     """
     Heterogeneity-guided transition splitting.
 
@@ -490,7 +491,9 @@ def split_on_transition_guided(region2states, tree, het_thresh=0.1,
         If True, after each split re-evaluate heterogeneity for all regions
         that transitioned into the just-split region, and add newly
         heterogeneous regions to the work queue within the same round.
-        This catches induced heterogeneity without waiting for the next round.
+    max_regions : int
+        Hard upper bound on the number of leaves. Splitting stops as soon as
+        tree.n_leaves reaches this limit, regardless of remaining het scores.
 
     Returns
     -------
@@ -525,6 +528,10 @@ def split_on_transition_guided(region2states, tree, het_thresh=0.1,
 
     n_splits = 0
     while heap:
+        if tree.n_leaves >= max_regions:
+            print(f'Region budget reached ({max_regions}), stopping splits.')
+            break
+
         neg_het, region = heapq.heappop(heap)
         het = -neg_het
 

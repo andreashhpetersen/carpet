@@ -103,12 +103,16 @@ class ResultsLogger:
         self.close()
 
 
-class CSVLogger:
+class RunLogger:
     """
-    Writes per-round metrics to a CSV file and a companion JSON metadata file.
+    Manages all file outputs for a single CARPET run.
 
-    Files are saved to data/results/csv/{env_name}_{run_id}.{csv,json}.
-    The description string should explain what is new or special about this run.
+    Creates a subfolder at data/results/runs/{env_name}_{run_id}/ containing:
+      meta.json    — config dict and description
+      metrics.csv  — per-round metrics
+      figs/        — partition plots, one per round
+
+    Use run_logger.figs_dir to get the figs directory path.
     """
     COLUMNS = ['round', 'n_regions', 'n_splits', 'het_max', 'het_mean',
                'll', 'perplexity', 'n_zero', 'n_total', 'prec_1step', 'prec_2step']
@@ -117,12 +121,14 @@ class CSVLogger:
         if run_id is None:
             run_id = datetime.now().strftime('%Y%m%d_%H%M%S')
         self.run_id = run_id
-        os.makedirs('./data/results/csv', exist_ok=True)
-        base = f'./data/results/csv/{env_name}_{run_id}'
-        with open(base + '.json', 'w') as f:
+        self.env_name = env_name
+        self.run_dir = f'./data/results/runs/{env_name}_{run_id}'
+        self.figs_dir = os.path.join(self.run_dir, 'figs')
+        os.makedirs(self.figs_dir, exist_ok=True)
+        with open(os.path.join(self.run_dir, 'meta.json'), 'w') as f:
             json.dump({'run_id': run_id, 'env': env_name,
                        'config': config_dict, 'description': description}, f, indent=2)
-        self._file = open(base + '.csv', 'w', newline='')
+        self._file = open(os.path.join(self.run_dir, 'metrics.csv'), 'w', newline='')
         self._writer = csv.writer(self._file)
         self._writer.writerow(self.COLUMNS)
 
@@ -141,6 +147,10 @@ class CSVLogger:
 
     def __exit__(self, *args):
         self.close()
+
+
+# Backward-compatible alias for old CSVLogger usage
+CSVLogger = RunLogger
 
 
 ### Agent data generation and saving/loading utilities

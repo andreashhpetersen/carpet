@@ -10,17 +10,18 @@ from envs.load import load_env
 from learning.splitting import split_on_action
 from models.policy import load_or_train_model
 from models.tree import TreeObserver
+from ensemble import build_ensemble, load_ensemble, evaluate_ensemble, estimate_precision_ensemble
 from pipeline import run_carpet, run_carpet_fixed, sample_next_states
 from viz.plotting import plot_tree_partition
 
-from utils import pad_to_array, save_training_data, load_training_data, ResultsLogger, CSVLogger
+from utils import pad_to_array, save_training_data, load_training_data, ResultsLogger, RunLogger
 
 
 if __name__ == '__main__':
 
     # load config
-    # config = load_config('random_walk')
-    config = load_config('bouncing_ball')
+    config = load_config('random_walk')
+    # config = load_config('bouncing_ball')
     # config = load_config('cruise_control')
 
     model_name = config['model_name']
@@ -75,43 +76,72 @@ if __name__ == '__main__':
 
         het_thresh = config.get('het_thresh', 0.1)
         propagate = False
+        k = 5
 
-        run_description = (
-            f"Stochastic fallback when no det groups - propagate={propagate}. "
-            f"het_thresh={het_thresh}, laplace={laplace}."
-        )
-        csv_logger = CSVLogger(
-            env_name=model_name,
-            config_dict={
-                'het_thresh': het_thresh,
-                'laplace': laplace,
-                'propagate': propagate,
-                'n_samples': 32,
-                'estimation_runs': estimation_runs,
-            },
-            description=run_description,
-        )
+        max_regions = 200
+        min_ll_improvement = 0.01
+        ll_patience = 10
 
-        run_carpet(
-            tree, env, model, logger, model_dir,
+        carpet_kwargs = dict(
             het_thresh=het_thresh,
             n_samples=32,
             estimation_runs=estimation_runs,
             laplace=laplace,
             n_dims=n_dims,
             model_name=model_name,
-            save_dir='./data/figs/',
             propagate=propagate,
-            csv_logger=csv_logger,
+            max_regions=max_regions,
+            min_ll_improvement=min_ll_improvement,
+            ll_patience=ll_patience,
         )
-        csv_logger.close()
-        # run_carpet_fixed(
-        #     tree, env, model, logger, model_dir,
-        #     rounds=rounds,
-        #     n_samples=32,
-        #     estimation_runs=estimation_runs,
-        #     laplace=laplace,
-        #     n_dims=n_dims,
-        #     model_name=model_name,
-        #     save_dir='./data/figs/',
-        # )
+
+        def make_tree():
+            t = TreeObserver(
+                n_dims=n_dims, n_acts=n_acts,
+                bounds=bounds, initial_preds=initial_preds
+            )
+            if mark_terminal:
+                t.mark_terminal_states(obs, mask)
+            split_on_action(t, obs, acts, mask, thresh=0.99, ratio_thresh=0.98)
+            t.reorder_leaf_labels()
+            return t
+
+        # Set to a manifest path to skip training and load an existing ensemble, e.g.:
+        load_manifest = './data/results/ensembles/Random Walk_20260331_152703.json'
+        # load_manifest = None
+
+        if load_manifest is not None:
+            trees, _ = load_ensemble(load_manifest)
+            manifest_path = load_manifest
+            logger.log(f'Loaded ensemble from {manifest_path} ({len(trees)} members)')
+        else:
+            trees, manifest_path = build_ensemble(
+                k=k,
+                make_tree=make_tree,
+                env=env, model=model, logger=logger, model_dir=model_dir,
+                env_name=model_name,
+                **carpet_kwargs,
+            )
+
+        # Ensemble evaluation
+        logger.section('Ensemble evaluation')
+        for tree in trees:
+            tree.set_transition_scores(obs, mask, n_step=1, laplace=laplace)
+
+        per_tree, (joint_ll, joint_perp, n_zero, n_total) = evaluate_ensemble(trees, obs, mask)
+
+        lls = [s[0] for s in per_tree]
+        perps = [s[1] for s in per_tree]
+        logger.log(f'Per-tree LL:         mean={np.mean(lls):.4f}  std={np.std(lls):.4f}')
+        logger.log(f'Per-tree perplexity: mean={np.mean(perps):.4f}  std={np.std(perps):.4f}')
+        logger.log(f'Joint ensemble LL:   {joint_ll:.4f} | perplexity: {joint_perp:.4f} | zero-prob: {n_zero}/{n_total}')
+
+        in_support, top1 = estimate_precision_ensemble(trees, env, model, n_runs=estimation_runs)
+        logger.log(f'Ensemble precision — in-support: {in_support:.4f},  top-1: {top1:.4f}')
+
+        # Single-run alternative (comment out build_ensemble above and use this):
+        # run_logger = RunLogger(env_name=model_name, config_dict=carpet_kwargs,
+        #                        description='Single run')
+        # run_carpet(tree, env, model, logger, model_dir,
+        #            run_logger=run_logger, **carpet_kwargs)
+        # run_logger.close()
