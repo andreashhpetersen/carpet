@@ -10,7 +10,8 @@ from envs.load import load_env
 from learning.splitting import split_on_action
 from models.policy import load_or_train_model
 from models.tree import TreeObserver
-from ensemble import build_ensemble, load_ensemble, evaluate_ensemble, estimate_precision_ensemble
+from ensemble import (build_ensemble, load_ensemble, build_label_matrix,
+                      evaluate_ensemble, estimate_precision_ensemble)
 from pipeline import run_carpet, run_carpet_fixed, sample_next_states
 from viz.plotting import plot_tree_partition
 
@@ -18,6 +19,10 @@ from utils import pad_to_array, save_training_data, load_training_data, ResultsL
 
 
 if __name__ == '__main__':
+
+    # Set to a manifest path to skip training and load an existing ensemble, e.g.:
+    load_manifest = './data/results/ensembles/Random Walk_20260414_151801.json'
+    # load_manifest = None
 
     # load config
     config = load_config('random_walk')
@@ -78,7 +83,7 @@ if __name__ == '__main__':
         propagate = False
         k = 5
 
-        max_regions = 200
+        max_regions = 60
         min_ll_improvement = 0.01
         ll_patience = 10
 
@@ -106,10 +111,6 @@ if __name__ == '__main__':
             t.reorder_leaf_labels()
             return t
 
-        # Set to a manifest path to skip training and load an existing ensemble, e.g.:
-        # load_manifest = './data/results/ensembles/Random Walk_20260331_152703.json'
-        load_manifest = None
-
         if load_manifest is not None:
             trees, _ = load_ensemble(load_manifest)
             manifest_path = load_manifest
@@ -125,10 +126,13 @@ if __name__ == '__main__':
 
         # Ensemble evaluation
         logger.section('Ensemble evaluation')
-        for tree in trees:
-            tree.set_transition_scores(obs, mask, n_step=1, laplace=laplace)
+        # for tree in trees:
+        #     tree.set_transition_scores(obs, mask, n_step=1, laplace=laplace)
 
-        per_tree, (joint_ll, joint_perp, n_zero, n_total) = evaluate_ensemble(trees, obs, mask)
+        all_obs_ens, label_matrix = build_label_matrix(trees, obs, mask)
+
+        per_tree, (joint_ll, joint_perp, n_zero, n_total) = evaluate_ensemble(
+            trees, all_obs_ens, label_matrix, obs, mask)
 
         lls = [s[0] for s in per_tree]
         perps = [s[1] for s in per_tree]
@@ -136,8 +140,12 @@ if __name__ == '__main__':
         logger.log(f'Per-tree perplexity: mean={np.mean(perps):.4f}  std={np.std(perps):.4f}')
         logger.log(f'Joint ensemble LL:   {joint_ll:.4f} | perplexity: {joint_perp:.4f} | zero-prob: {n_zero}/{n_total}')
 
-        in_support, top1 = estimate_precision_ensemble(trees, env, model, n_runs=estimation_runs)
+        in_support, top1, ens_euclidean, ens_euclidean_true, ens_euclidean_ratio = (
+            estimate_precision_ensemble(
+                trees, all_obs_ens, label_matrix, env, model, n_runs=estimation_runs))
         logger.log(f'Ensemble precision — in-support: {in_support:.4f},  top-1: {top1:.4f}')
+        logger.log(f'Ensemble euclidean error — predicted: {ens_euclidean:.4f}, '
+                   f'true: {ens_euclidean_true:.4f}, ratio: {ens_euclidean_ratio:.4f}')
 
         # Single-run alternative (comment out build_ensemble above and use this):
         # run_logger = RunLogger(env_name=model_name, config_dict=carpet_kwargs,

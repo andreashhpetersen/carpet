@@ -9,7 +9,7 @@ Build an ensemble of k trees, each trained independently via run_carpet:
         k=5,
         make_tree=lambda: my_initialized_tree_factory(),
         env=env, model=model, logger=logger, model_dir=model_dir,
-        env_name='Bouncing Ball',
+        env_name='Random Walk',
         **carpet_kwargs,
     )
 
@@ -18,15 +18,29 @@ An ensemble manifest is saved to data/results/ensembles/{env}_{id}.json.
 
 Inference
 ---------
-Given a trained ensemble, assign a state to its intersection region and compute
-a factored transition distribution:
+The ensemble transition model works by scoring training points directly rather
+than enumerating intersection regions.  Given a current intersection region
+(r1, ..., rk) and a precomputed label matrix L of shape (n_points, k):
 
-    region_tuple = ensemble_region(trees, state)
-    dist = ensemble_transition(trees, region_tuple)
+    score(x_j) = prod_i  T_i[r_i, L[j, i]]
+
+Working in log space (sum of log probs) avoids underflow.  The predicted next
+state is the argmax training point; its row in L gives the predicted next
+intersection tuple.  For LL, scores are summed within each intersection region
+and normalised.
+
+Precompute the label matrix once and reuse it across all evaluation calls:
+
+    all_obs, label_matrix = build_label_matrix(trees, obs, mask)
+    per_tree, joint = evaluate_ensemble(trees, all_obs, label_matrix, obs, mask)
+    in_supp, top1 = estimate_precision_ensemble(
+        trees, all_obs, label_matrix, env, model)
 """
 
 import json
 import os
+from collections import defaultdict
+
 import numpy as np
 from datetime import datetime
 
@@ -57,9 +71,7 @@ def build_ensemble(k, make_tree, env, model, logger, model_dir, env_name,
     Returns
     -------
     trees : list of TreeObserver
-        The k trained trees.
     manifest_path : str
-        Path to the saved ensemble manifest JSON.
     """
     ensemble_id = datetime.now().strftime('%Y%m%d_%H%M%S')
     member_run_ids = []
@@ -106,14 +118,10 @@ def load_ensemble(manifest_path):
     """
     Load a previously built ensemble from disk.
 
-    Reads the manifest JSON and loads each member tree from the
-    tree.joblib file in its run subfolder.
-
     Parameters
     ----------
     manifest_path : str
-        Path to the ensemble manifest JSON (e.g.
-        'data/results/ensembles/random_walk_20260331_120000.json').
+        Path to the ensemble manifest JSON.
 
     Returns
     -------
@@ -136,7 +144,7 @@ def load_ensemble(manifest_path):
 
 def ensemble_region(trees, state):
     """
-    Return the intersection region tuple for a state across all trees.
+    Return the intersection region tuple for a single state across all trees.
 
     Parameters
     ----------
@@ -145,103 +153,141 @@ def ensemble_region(trees, state):
 
     Returns
     -------
-    tuple of int  — (r1, r2, ..., rk), one region label per tree
+    tuple of int — (r1, r2, ..., rk)
     """
     return tuple(tree.get(state).label for tree in trees)
 
 
-def ensemble_transition(trees, region_tuple):
+def build_label_matrix(trees, obs, mask):
     """
-    Compute a factored transition distribution over intersection regions.
-
-    Uses the product-of-marginals model: assumes independence across trees.
-    Enumerates all intersection regions observed in the product support,
-    normalises to 1 (filtering geometric phantoms implicitly via the
-    outer product — any zero-probability entry in any tree drops the whole
-    combination to zero).
+    Flatten training data and precompute region labels for every point in
+    every tree.
 
     Parameters
     ----------
     trees : list of TreeObserver
-    region_tuple : tuple of int
-        Current intersection region, one label per tree.
+    obs   : np.ndarray, shape (n_runs, T, n_dims)
+    mask  : np.ndarray, shape (n_runs, T), bool
 
     Returns
     -------
-    dist : dict mapping intersection tuple → probability
-        Sparse — only non-zero entries are included.
+    all_obs      : np.ndarray, shape (n_points, n_dims)
+    label_matrix : np.ndarray, shape (n_points, k), dtype int
+        label_matrix[j, i] = region label of all_obs[j] in tree i
     """
-    # Per-tree transition distributions from the current region
-    marginals = []
-    for tree, r in zip(trees, region_tuple):
-        row = tree.T[r]               # shape (n_leaves_i,)
-        nonzero = np.where(row > 0)[0]
-        marginals.append({int(j): float(row[j]) for j in nonzero})
-
-    # Compute the outer product over all trees (only non-zero combinations)
-    dist = {(): 1.0}
-    for marginal in marginals:
-        new_dist = {}
-        for prefix, p_prefix in dist.items():
-            for r_next, p_next in marginal.items():
-                new_dist[prefix + (r_next,)] = p_prefix * p_next
-        dist = new_dist
-
-    # Normalise (product of already-normalised marginals sums to 1 in theory,
-    # but floating-point drift may occur)
-    total = sum(dist.values())
-    if total > 0:
-        dist = {k: v / total for k, v in dist.items()}
-
-    return dist
+    all_obs = np.concatenate([run[run_mask] for run, run_mask in zip(obs, mask)])
+    label_matrix = np.stack(
+        [tree.get_labels(all_obs) for tree in trees], axis=1
+    ).astype(int)
+    return all_obs, label_matrix
 
 
-def evaluate_ensemble(trees, obs, mask):
+def _log_score_points(trees, label_matrix, current_tuple, cache=None):
+    """
+    Compute log-scores for every training point as a candidate next state.
+
+    score(x_j) = sum_i  log T_i[r_i,  label_matrix[j, i]]
+
+    Points unreachable under any single tree get -inf.
+
+    Parameters
+    ----------
+    trees        : list of TreeObserver
+    label_matrix : np.ndarray, shape (n_points, k)
+    current_tuple : tuple of int — current intersection region (r1, ..., rk)
+    cache : dict or None — if provided, results are memoised by current_tuple
+
+    Returns
+    -------
+    log_scores : np.ndarray, shape (n_points,)
+    """
+    if cache is not None and current_tuple in cache:
+        return cache[current_tuple]
+
+    log_scores = np.zeros(len(label_matrix), dtype=float)
+    for i, (tree, r_cur) in enumerate(zip(trees, current_tuple)):
+        probs = tree.T[r_cur, label_matrix[:, i]]
+        with np.errstate(divide='ignore'):
+            log_scores += np.log(probs)
+
+    if cache is not None:
+        cache[current_tuple] = log_scores
+
+    return log_scores
+
+
+def _logsumexp(log_scores):
+    """Numerically stable log-sum-exp, ignoring -inf entries."""
+    finite = log_scores[np.isfinite(log_scores)]
+    if len(finite) == 0:
+        return -np.inf
+    m = np.max(finite)
+    return m + np.log(np.sum(np.exp(finite - m)))
+
+
+def evaluate_ensemble(trees, all_obs, label_matrix, obs, mask):
     """
     Evaluate the ensemble on training data.
 
     Per-tree: runs `evaluate` independently on each tree.
-    Joint: computes LL under the product-of-marginals ensemble transition model.
-    The ensemble transition for each step is looked up from a cache keyed on
-    the current intersection tuple to avoid redundant outer-product computations.
+    Joint: computes LL by scoring training points as candidate next states,
+    summing scores within each intersection region, and normalising.
 
     Parameters
     ----------
-    trees : list of TreeObserver
-    obs : np.ndarray, shape (n_runs, T, n_dims)
-    mask : np.ndarray, shape (n_runs, T), bool
+    trees        : list of TreeObserver
+    all_obs      : np.ndarray, shape (n_points, n_dims)  — from build_label_matrix
+    label_matrix : np.ndarray, shape (n_points, k)       — from build_label_matrix
+    obs          : np.ndarray, shape (n_runs, T, n_dims)
+    mask         : np.ndarray, shape (n_runs, T), bool
 
     Returns
     -------
     per_tree : list of (ll, perplexity, n_zero, n_total) — one per tree
-    joint    : (ll, perplexity, n_zero, n_total)         — ensemble joint model
+    joint    : (ll, perplexity, n_zero, n_total)
     """
     per_tree = [evaluate(tree, obs, mask) for tree in trees]
+
+    # Map intersection tuple → indices into all_obs / label_matrix
+    tuple_to_indices = defaultdict(list)
+    for j, row in enumerate(label_matrix):
+        tuple_to_indices[tuple(row)].append(j)
 
     total_ll = 0.0
     n_transitions = 0
     n_zero = 0
+    cache = {}
 
+    offset = 0
     for run, run_mask in zip(obs, mask):
         run_obs = run[run_mask]
-        tuples = [ensemble_region(trees, x) for x in run_obs]
+        n = len(run_obs)
+        run_L = label_matrix[offset:offset + n]
+        offset += n
 
-        for i in range(len(tuples) - 1):
-            current = tuples[i]
-            nxt = tuples[i + 1]
+        for i in range(n - 1):
+            current_tuple = tuple(run_L[i])
+            next_tuple = tuple(run_L[i + 1])
 
-            # P(nxt | current) = product of each tree's marginal probability.
-            # No need to materialise the full outer-product distribution — we only
-            # ever need the probability of this specific observed next tuple.
-            prob = 1.0
-            for tree, r_cur, r_nxt in zip(trees, current, nxt):
-                prob *= float(tree.T[r_cur, r_nxt])
+            log_scores = _log_score_points(trees, label_matrix, current_tuple, cache)
 
-            if prob == 0.0:
+            next_indices = tuple_to_indices.get(next_tuple, [])
+            if not next_indices:
                 n_zero += 1
-            else:
-                total_ll += np.log(prob)
-                n_transitions += 1
+                continue
+
+            log_next = _logsumexp(log_scores[next_indices])
+            if not np.isfinite(log_next):
+                n_zero += 1
+                continue
+
+            log_total = _logsumexp(log_scores)
+            if not np.isfinite(log_total):
+                n_zero += 1
+                continue
+
+            total_ll += log_next - log_total
+            n_transitions += 1
 
     total = n_transitions + n_zero
     avg_ll = total_ll / n_transitions if n_transitions > 0 else float('-inf')
@@ -250,60 +296,94 @@ def evaluate_ensemble(trees, obs, mask):
     return per_tree, (avg_ll, perplexity, n_zero, total)
 
 
-def estimate_precision_ensemble(trees, env, model, n_runs=100):
+def estimate_precision_ensemble(trees, all_obs, label_matrix, env, model, n_runs=100):
     """
-    Estimate ensemble precision when the real model is acting.
+    Estimate ensemble precision and euclidean error when the real model is acting.
 
-    For each step:
-      - Maps current state to intersection tuple via ensemble_region.
-      - Gets the predicted distribution via ensemble_transition.
-      - Steps the environment with the model's action.
-      - Maps next state to its intersection tuple.
-      - Records whether the actual tuple is in the support (in-support precision)
-        and whether it is the single most likely tuple (top-1 precision).
+    For each environment step:
+      - Scores all training points as candidate next states.
+      - Predicted next intersection tuple = label_matrix row of the argmax point.
+      - Checks top-1 (predicted == actual) and in-support (actual tuple has any
+        training point with finite score).
+      - Euclidean error: weighted mean distance from all training points to the
+        actual next state, using normalised scores as weights.
 
     Parameters
     ----------
-    trees : list of TreeObserver
-    env   : gym environment
-    model : RL model with predict()
-    n_runs : int
+    trees        : list of TreeObserver
+    all_obs      : np.ndarray, shape (n_points, n_dims)
+    label_matrix : np.ndarray, shape (n_points, k)
+    env          : gym environment
+    model        : RL model with predict()
+    n_runs       : int
 
     Returns
     -------
-    in_support_prec : float — fraction of steps where actual next tuple has nonzero prob
-    top1_prec       : float — fraction of steps where actual next tuple is the argmax
+    in_support_prec  : float
+    top1_prec        : float
+    euclidean_error  : float — score-weighted mean distance to actual next state
+    euclidean_true   : float — uniform mean distance within actual next region (baseline)
+    euclidean_ratio  : float — euclidean_error / euclidean_true (1.0 = perfect region prediction)
     """
-    n_support = 0
+    tuple_to_indices = defaultdict(list)
+    for j, row in enumerate(label_matrix):
+        tuple_to_indices[tuple(row)].append(j)
+
     n_top1 = 0
+    n_support = 0
+    total_euclidean = 0.0
+    total_euclidean_true = 0.0
+    n_euclidean_true = 0
     n_total = 0
-    transition_cache = {}
+    cache = {}
 
     for _ in range(n_runs):
-        obs, _ = env.reset()
+        obs_env, _ = env.reset()
         done = False
 
         while not done:
-            current = ensemble_region(trees, obs)
+            current_tuple = ensemble_region(trees, obs_env)
+            log_scores = _log_score_points(trees, label_matrix, current_tuple, cache)
 
-            if current not in transition_cache:
-                transition_cache[current] = ensemble_transition(trees, current)
-            dist = transition_cache[current]
-
-            action, _ = model.predict(obs, deterministic=True)
+            action, _ = model.predict(obs_env, deterministic=True)
             nobs, _, done, _, _ = env.step(action)
 
-            nxt = ensemble_region(trees, nobs)
+            next_tuple = ensemble_region(trees, nobs)
 
-            if dist.get(nxt, 0.0) > 0:
-                n_support += 1
+            finite_mask = np.isfinite(log_scores)
+            if finite_mask.any():
+                predicted_tuple = tuple(label_matrix[np.argmax(log_scores)])
+                if predicted_tuple == next_tuple:
+                    n_top1 += 1
 
-            if dist and max(dist, key=dist.get) == nxt:
-                n_top1 += 1
+                next_indices = tuple_to_indices.get(next_tuple, [])
+                if next_indices and np.any(finite_mask[next_indices]):
+                    n_support += 1
+
+                # Normalise scores to weights and compute weighted mean distance
+                finite_log = log_scores[finite_mask]
+                m = np.max(finite_log)
+                weights = np.zeros(len(all_obs))
+                weights[finite_mask] = np.exp(finite_log - m)
+                weights /= weights.sum()
+
+                dists = np.linalg.norm(all_obs - nobs, axis=1)
+                total_euclidean += float(np.dot(weights, dists))
+
+                # True error: uniform sample from actual next intersection region
+                next_indices = tuple_to_indices.get(next_tuple, [])
+                if next_indices:
+                    true_pts = all_obs[next_indices]
+                    idx = np.random.choice(len(true_pts), size=min(20, len(true_pts)), replace=True)
+                    total_euclidean_true += float(np.mean(np.linalg.norm(true_pts[idx] - nobs, axis=1)))
+                    n_euclidean_true += 1
 
             n_total += 1
-            obs = nobs
+            obs_env = nobs
 
-    in_support = n_support / n_total if n_total > 0 else 0.0
     top1 = n_top1 / n_total if n_total > 0 else 0.0
-    return in_support, top1
+    in_support = n_support / n_total if n_total > 0 else 0.0
+    euclidean_error = total_euclidean / n_total if n_total > 0 else float('inf')
+    euclidean_true = total_euclidean_true / n_euclidean_true if n_euclidean_true > 0 else float('inf')
+    euclidean_ratio = euclidean_error / euclidean_true if euclidean_true > 0 else float('nan')
+    return in_support, top1, euclidean_error, euclidean_true, euclidean_ratio

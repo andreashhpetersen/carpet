@@ -35,9 +35,11 @@ ENV_ORDER = ['Random Walk', 'Bouncing Ball', 'Cruise Control']
 
 # Single-panel metrics in display order (precision handled separately as a pair)
 METRICS = [
-    ('ll',              'Log-likelihood',   'Log-likelihood'),
-    ('euclidean_error', 'Euclidean error',  'Distance'),
-    ('n_regions',       'Number of regions','Regions'),
+    ('ll',               'Log-likelihood',          'Log-likelihood'),
+    ('euclidean_error',  'Euclidean error (pred.)',  'Distance'),
+    ('euclidean_true',   'Euclidean error (true)',   'Distance'),
+    ('euclidean_ratio',  'Euclidean ratio',          'Ratio'),
+    ('n_regions',        'Number of regions',        'Regions'),
 ]
 
 
@@ -61,8 +63,8 @@ def load_runs(env_filter=None):
 def plot_metric(env_name, runs_with_labels, col, ylabel, fig_path):
     fig, ax = plt.subplots(figsize=(6, 4))
     for label, (meta, rows) in runs_with_labels:
-        xs = [int(r['round']) for r in rows if r[col] not in ('', 'None')]
-        ys = [float(r[col]) for r in rows if r[col] not in ('', 'None')]
+        xs = [int(r['round']) for r in rows if r.get(col, '') not in ('', 'None')]
+        ys = [float(r[col]) for r in rows if r.get(col, '') not in ('', 'None')]
         if not xs:
             continue
         ax.plot(xs, ys, marker='o', markersize=3, label=label)
@@ -84,8 +86,8 @@ def plot_precision_pair(env_name, runs_with_labels, fig_path):
         ('prec_2step', 'Precision (2-step)', axes[1]),
     ]:
         for label, (meta, rows) in runs_with_labels:
-            xs = [int(r['round']) for r in rows if r[col] not in ('', 'None')]
-            ys = [float(r[col]) for r in rows if r[col] not in ('', 'None')]
+            xs = [int(r['round']) for r in rows if r.get(col, '') not in ('', 'None')]
+            ys = [float(r[col]) for r in rows if r.get(col, '') not in ('', 'None')]
             if not xs:
                 continue
             ax.plot(xs, ys, marker='o', markersize=3, label=label)

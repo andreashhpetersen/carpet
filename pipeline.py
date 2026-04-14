@@ -207,8 +207,8 @@ def run_carpet(tree, env, model, logger, model_dir,
         logger.log(f'Precision (2 step, model acting): {prec_2step:.4f}')
 
         tree.set_transition_scores(obs, mask, n_step=1, laplace=laplace)
-        euclidean_error = estimate_euclidean_error(tree, obs, mask)
-        logger.log(f'Euclidean error (predicted region): {euclidean_error:.4f}')
+        euclidean_pred, euclidean_true, euclidean_ratio = estimate_euclidean_error(tree, obs, mask)
+        logger.log(f'Euclidean error — predicted: {euclidean_pred:.4f}, true: {euclidean_true:.4f}, ratio: {euclidean_ratio:.4f}')
 
         if run_logger is not None:
             run_logger.log_round(round_num, n_regions=tree.n_leaves,
@@ -216,7 +216,9 @@ def run_carpet(tree, env, model, logger, model_dir,
                                  het_mean=float(np.mean(het_values)) if het_values else None,
                                  ll=ll, perplexity=perp, n_zero=n_zero, n_total=n_total,
                                  prec_1step=prec_1step, prec_2step=prec_2step,
-                                 euclidean_error=euclidean_error)
+                                 euclidean_error=euclidean_pred,
+                                 euclidean_true=euclidean_true,
+                                 euclidean_ratio=euclidean_ratio)
             if n_dims == 2:
                 plot_tree_partition(
                     tree, draw_boundaries=False,
