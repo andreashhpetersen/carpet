@@ -107,8 +107,8 @@ if __name__ == '__main__':
             return t
 
         # Set to a manifest path to skip training and load an existing ensemble, e.g.:
-        load_manifest = './data/results/ensembles/Random Walk_20260331_152703.json'
-        # load_manifest = None
+        # load_manifest = './data/results/ensembles/Random Walk_20260331_152703.json'
+        load_manifest = None
 
         if load_manifest is not None:
             trees, _ = load_ensemble(load_manifest)

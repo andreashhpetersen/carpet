@@ -31,11 +31,13 @@ RUNS_DIR = './data/results/runs'
 FIG_DIR = './data/results/figs'
 REPORT_PATH = './data/results/report.tex'
 
+ENV_ORDER = ['Random Walk', 'Bouncing Ball', 'Cruise Control']
+
+# Single-panel metrics in display order (precision handled separately as a pair)
 METRICS = [
-    ('prec_1step',  'Precision (1-step)',     'Precision'),
-    ('prec_2step',  'Precision (2-step)',     'Precision'),
-    ('n_regions',   'Number of regions',      'Regions'),
-    ('ll',          'Log-likelihood',         'Log-likelihood'),
+    ('ll',              'Log-likelihood',   'Log-likelihood'),
+    ('euclidean_error', 'Euclidean error',  'Distance'),
+    ('n_regions',       'Number of regions','Regions'),
 ]
 
 
@@ -69,6 +71,29 @@ def plot_metric(env_name, runs_with_labels, col, ylabel, fig_path):
     ax.set_title(f'{env_name} — {ylabel}')
     if len(runs_with_labels) > 1:
         ax.legend(fontsize=9, loc='best')
+    fig.tight_layout()
+    os.makedirs(os.path.dirname(fig_path), exist_ok=True)
+    fig.savefig(fig_path)
+    plt.close(fig)
+
+
+def plot_precision_pair(env_name, runs_with_labels, fig_path):
+    fig, axes = plt.subplots(1, 2, figsize=(10, 4), sharey=True)
+    for col, ylabel, ax in [
+        ('prec_1step', 'Precision (1-step)', axes[0]),
+        ('prec_2step', 'Precision (2-step)', axes[1]),
+    ]:
+        for label, (meta, rows) in runs_with_labels:
+            xs = [int(r['round']) for r in rows if r[col] not in ('', 'None')]
+            ys = [float(r[col]) for r in rows if r[col] not in ('', 'None')]
+            if not xs:
+                continue
+            ax.plot(xs, ys, marker='o', markersize=3, label=label)
+        ax.set_xlabel('Round')
+        ax.set_ylabel('Precision')
+        ax.set_title(f'{env_name} — {ylabel}')
+        if len(runs_with_labels) > 1:
+            ax.legend(fontsize=9, loc='best')
     fig.tight_layout()
     os.makedirs(os.path.dirname(fig_path), exist_ok=True)
     fig.savefig(fig_path)
@@ -137,6 +162,12 @@ insufficient entropy reduction).
     learned transition model. Computed on held-out training trajectories. Higher (less
     negative) is better; a value of 0 would mean every transition is predicted with
     certainty.
+  \item[Euclidean error] For each observed transition $s_t \to s_{t+1}$, the tree predicts
+    the next region as the argmax of its transition row. Points are sampled uniformly from
+    the observed training states in that predicted region, and the mean Euclidean distance
+    to the actual next state $s_{t+1}$ is recorded. Lower is better. Unlike precision, this
+    metric is robust to small region misclassifications: predicting a neighbouring region
+    incurs a small error rather than a binary miss.
 \end{description}
 
 \subsection*{Trials and decisions}
@@ -188,8 +219,14 @@ def generate_report(env_filter=None):
     os.makedirs(FIG_DIR, exist_ok=True)
     os.makedirs(os.path.dirname(REPORT_PATH), exist_ok=True)
 
+    # Present environments in a fixed order; any not in ENV_ORDER come last alphabetically
+    known = [e for e in ENV_ORDER if e in by_env]
+    extra = sorted(e for e in by_env if e not in ENV_ORDER)
+    env_names_ordered = known + extra
+
     sections = []
-    for env_name, runs in sorted(by_env.items()):
+    for env_name in env_names_ordered:
+        runs = by_env[env_name]
         body = f'\\section{{{escape_latex(env_name)}}}\n\n'
 
         # Assign a short letter label to each run
@@ -204,13 +241,24 @@ def generate_report(env_filter=None):
             body += f'  \\item \\textbf{{{letter}}} ({rid}): {desc}\n'
         body += '\\end{itemize}\n\n'
 
-        # One figure per metric
         body += '\\subsection*{Metrics}\n'
-        for col, ylabel, short in METRICS:
+
+        # 1. Log-likelihood
+        col, ylabel, _ = METRICS[0]
+        fig_path = f'{FIG_DIR}/{env_name}_{col}.pdf'
+        plot_metric(env_name, runs_with_labels, col, ylabel, fig_path)
+        body += make_latex_figure(fig_path, f'{ylabel} over rounds for \\texttt{{{escape_latex(env_name)}}}.') + '\n'
+
+        # 2. Precision 1-step and 2-step side-by-side
+        prec_fig_path = f'{FIG_DIR}/{env_name}_precision.pdf'
+        plot_precision_pair(env_name, runs_with_labels, prec_fig_path)
+        body += make_latex_figure(prec_fig_path, f'Precision (1- and 2-step) over rounds for \\texttt{{{escape_latex(env_name)}}}.') + '\n'
+
+        # 3. Remaining metrics (euclidean_error, n_regions)
+        for col, ylabel, _ in METRICS[1:]:
             fig_path = f'{FIG_DIR}/{env_name}_{col}.pdf'
             plot_metric(env_name, runs_with_labels, col, ylabel, fig_path)
-            caption = f'{ylabel} over rounds for \\texttt{{{escape_latex(env_name)}}}.'
-            body += make_latex_figure(fig_path, caption) + '\n'
+            body += make_latex_figure(fig_path, f'{ylabel} over rounds for \\texttt{{{escape_latex(env_name)}}}.') + '\n'
 
         sections.append(body)
 

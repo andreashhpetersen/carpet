@@ -115,7 +115,8 @@ class RunLogger:
     Use run_logger.figs_dir to get the figs directory path.
     """
     COLUMNS = ['round', 'n_regions', 'n_splits', 'het_max', 'het_mean',
-               'll', 'perplexity', 'n_zero', 'n_total', 'prec_1step', 'prec_2step']
+               'll', 'perplexity', 'n_zero', 'n_total', 'prec_1step', 'prec_2step',
+               'euclidean_error']
 
     def __init__(self, env_name, config_dict, description, run_id=None):
         if run_id is None:
@@ -134,9 +135,10 @@ class RunLogger:
 
     def log_round(self, round_num, n_regions, n_splits=None, het_max=None, het_mean=None,
                   ll=None, perplexity=None, n_zero=None, n_total=None,
-                  prec_1step=None, prec_2step=None):
+                  prec_1step=None, prec_2step=None, euclidean_error=None):
         self._writer.writerow([round_num, n_regions, n_splits, het_max, het_mean,
-                                ll, perplexity, n_zero, n_total, prec_1step, prec_2step])
+                                ll, perplexity, n_zero, n_total, prec_1step, prec_2step,
+                                euclidean_error])
         self._file.flush()
 
     def close(self):

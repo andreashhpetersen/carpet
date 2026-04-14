@@ -1,6 +1,6 @@
 import numpy as np
 
-from analysis.metrics import estimate_precision_model, evaluate
+from analysis.metrics import estimate_precision_model, evaluate, estimate_euclidean_error
 from learning.splitting import split_on_transition, split_on_transition_guided
 from models.tree import TreeObserver, State
 from utils import load_training_data
@@ -206,12 +206,17 @@ def run_carpet(tree, env, model, logger, model_dir,
         )
         logger.log(f'Precision (2 step, model acting): {prec_2step:.4f}')
 
+        tree.set_transition_scores(obs, mask, n_step=1, laplace=laplace)
+        euclidean_error = estimate_euclidean_error(tree, obs, mask)
+        logger.log(f'Euclidean error (predicted region): {euclidean_error:.4f}')
+
         if run_logger is not None:
             run_logger.log_round(round_num, n_regions=tree.n_leaves,
                                  n_splits=n_splits, het_max=max(het_values) if het_values else None,
                                  het_mean=float(np.mean(het_values)) if het_values else None,
                                  ll=ll, perplexity=perp, n_zero=n_zero, n_total=n_total,
-                                 prec_1step=prec_1step, prec_2step=prec_2step)
+                                 prec_1step=prec_1step, prec_2step=prec_2step,
+                                 euclidean_error=euclidean_error)
             if n_dims == 2:
                 plot_tree_partition(
                     tree, draw_boundaries=False,
