@@ -127,21 +127,17 @@ def evaluate(tree, obs, mask):
 
 def estimate_euclidean_error(tree, obs, mask, n_samples=20):
     """
-    Estimate the mean Euclidean distance between the actual next state and
-    points sampled uniformly from the predicted next region.
+    Estimate predicted and true Euclidean errors for the top-1 region prediction.
 
     For each observed transition (s_t -> s_{t+1}):
-      - Find the current region r_t.
-      - Predict the next region as argmax of T[r_t] (top-1 prediction).
-      - Sample n_samples points uniformly from the observed training states
-        that belong to that predicted region (a proxy for a uniform draw from
-        the region's geometry, which is polynomial and cannot be sampled
-        analytically).
-      - Record the mean distance between those samples and s_{t+1}.
-
-    A smaller value means the predicted region is spatially close to where the
-    model actually ends up, even when the exact region label is wrong.  The
-    metric is expected to decrease as the partition becomes finer.
+      - Predicted error: sample n_samples points from the predicted next region
+        (argmax of T[r_t]) and compute mean distance to s_{t+1}.
+      - True error: sample n_samples points from the actual next region
+        (the region s_{t+1} falls in) and compute mean distance to s_{t+1}.
+        This is the irreducible error from the partition's spatial resolution —
+        the best any method can do at this granularity.
+      - Ratio: predicted / true. A ratio of 1.0 means the correct region was
+        predicted; higher means the prediction was spatially further off.
 
     Parameters
     ----------
@@ -149,13 +145,13 @@ def estimate_euclidean_error(tree, obs, mask, n_samples=20):
     obs  : np.ndarray, shape (n_runs, T, n_dims)
     mask : np.ndarray, shape (n_runs, T), bool
     n_samples : int
-        Number of points to sample from the predicted region per transition.
 
     Returns
     -------
-    mean_error : float
+    pred_error : float
+    true_error : float
+    ratio      : float  (pred_error / true_error)
     """
-    # Build a map label -> observed states from current training data
     all_obs = np.concatenate([run[run_mask] for run, run_mask in zip(obs, mask)], axis=0)
     all_labels = tree.get_labels(all_obs)
 
@@ -163,7 +159,8 @@ def estimate_euclidean_error(tree, obs, mask, n_samples=20):
     for label in np.unique(all_labels):
         leaf_states[label] = all_obs[all_labels == label]
 
-    total_error = 0.0
+    total_pred = 0.0
+    total_true = 0.0
     n_transitions = 0
 
     for run, run_mask in zip(obs, mask):
@@ -173,18 +170,30 @@ def estimate_euclidean_error(tree, obs, mask, n_samples=20):
         for i in range(len(labels) - 1):
             r_i = int(labels[i])
             s_next = run_obs[i + 1]
+            actual_r_j = int(labels[i + 1])
 
             predicted_r_j = int(np.argmax(tree.T[r_i]))
+
             states_in_pred = leaf_states.get(predicted_r_j)
-            if states_in_pred is None or len(states_in_pred) == 0:
+            states_in_true = leaf_states.get(actual_r_j)
+            if (states_in_pred is None or len(states_in_pred) == 0 or
+                    states_in_true is None or len(states_in_true) == 0):
                 continue
 
-            idx = np.random.choice(len(states_in_pred), size=n_samples, replace=True)
-            sampled = states_in_pred[idx]
-            total_error += np.mean(np.linalg.norm(sampled - s_next, axis=1))
+            idx_pred = np.random.choice(len(states_in_pred), size=n_samples, replace=True)
+            idx_true = np.random.choice(len(states_in_true), size=n_samples, replace=True)
+
+            total_pred += np.mean(np.linalg.norm(states_in_pred[idx_pred] - s_next, axis=1))
+            total_true += np.mean(np.linalg.norm(states_in_true[idx_true] - s_next, axis=1))
             n_transitions += 1
 
-    return total_error / n_transitions if n_transitions > 0 else float('inf')
+    if n_transitions == 0:
+        return float('inf'), float('inf'), float('nan')
+
+    pred_error = total_pred / n_transitions
+    true_error = total_true / n_transitions
+    ratio = pred_error / true_error if true_error > 0 else float('nan')
+    return pred_error, true_error, ratio
 
 
 def simulate(tree, env, n_sims=5):
