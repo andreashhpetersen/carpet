@@ -5,6 +5,7 @@ from sklearn.cluster import AgglomerativeClustering
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import accuracy_score
 from sklearn.model_selection import train_test_split
+from sklearn.neighbors import BallTree
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import PolynomialFeatures, StandardScaler, Normalizer
 
@@ -59,7 +60,12 @@ def poly_log_reg(X, y, degree=1, plot=False, max_iter=200, thresh=0.95, max_degr
     - thresh: early-stop threshold for test accuracy
     - max_degree: maximum polynomial degree to try
     - min_improvement: minimum absolute increase in test score required to prefer a higher-degree model
+
+    Returns (None, 0.0) if X has fewer than 2 classes.
     """
+    if len(np.unique(y)) < 2:
+        return None, 0.0
+
     # Use stratified split if all classes have enough samples; with test_size=0.1
     # sklearn needs at least 1 sample per class in each split.
     min_class_count = np.min(np.bincount(y.astype(int)))
@@ -144,16 +150,21 @@ def split_on_action(tree, states, acts, mask, thresh=0.95, ratio_thresh=0.9):
                     continue
 
                 leaf.action = None  # required by split_leaf
-                branch = tree.split_leaf(leaf.states, y, leaf, thresh=thresh)
+                pipe, score = poly_log_reg(leaf.states, y, thresh=thresh, max_iter=1000)
+                if pipe is None or score < thresh:
+                    leaf.action = majority  # restore so the leaf stays usable
+                    continue
 
-                preds = branch.pipe.predict(leaf.states)
+                preds = pipe.predict(leaf.states)
+                left_acts = leaf.acts[preds == 0]
+                right_acts = leaf.acts[preds == 1]
+                if len(left_acts) == 0 or len(right_acts) == 0:
+                    leaf.action = majority
+                    continue
+
+                branch = tree.split_leaf(leaf.states, y, leaf, pipe=pipe)
                 # preds==1 side is majority action; preds==0 side is everything else
-                try:
-                    branch.left.action  = int(np.bincount(leaf.acts[preds == 0].astype(int)).argmax())
-                except ValueError:
-                    print("issue with argmaxing actions after split")
-                    import ipdb; ipdb.set_trace()
-
+                branch.left.action  = int(np.bincount(left_acts.astype(int)).argmax())
                 branch.right.action = majority
 
                 changed = True
@@ -408,7 +419,12 @@ def _attempt_split(region, region2states, tree, thresh_ratio, entropy_thresh, ga
         gate_counts['entropy'] += 1
         return False
 
-    tree.split_leaf(points, y, leaf, thresh=0.9)
+    pipe, score = poly_log_reg(points, y, thresh=0.9)
+    if pipe is None or score < 0.9:
+        gate_counts['spatial'] += 1
+        return False
+
+    tree.split_leaf(points, y, leaf, pipe=pipe)
     gate_counts['split'] += 1
     return True
 
@@ -510,7 +526,7 @@ def split_on_transition_guided(region2states, tree, het_thresh=0.1,
     print('split leaves (guided)\n')
     leaves = tree.leaf_dict
     gate_counts = {'terminal': 0, 'min_samples': 0, 'no_det_groups': 0,
-                   'balance': 0, 'entropy': 0, 'split': 0}
+                   'balance': 0, 'entropy': 0, 'spatial': 0, 'split': 0}
 
     # Compute initial heterogeneity for all regions.
     het_scores = {}
