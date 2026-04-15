@@ -72,6 +72,11 @@ def poly_log_reg(X, y, degree=1, plot=False, max_iter=200, thresh=0.95, max_degr
     stratify = y if min_class_count >= 10 else None
     X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.1, random_state=0, stratify=stratify)
 
+    # Without stratification, the minority class can fall entirely into the test
+    # set.  If training has only one class, no boundary can be fitted.
+    if len(np.unique(y_train)) < 2:
+        return None, 0.0
+
     best_pipe = None
     best_score = -np.inf
     current_degree = max(1, int(degree))
