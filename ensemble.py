@@ -78,8 +78,23 @@ from pipeline import run_carpet
 from utils import RunLogger
 
 
+def _git_snapshot():
+    """Return a dict with the current git commit hash and message, or empty strings on failure."""
+    import subprocess
+    try:
+        commit_hash = subprocess.check_output(
+            ['git', 'rev-parse', 'HEAD'], stderr=subprocess.DEVNULL
+        ).decode().strip()
+        commit_msg = subprocess.check_output(
+            ['git', 'log', '-1', '--pretty=%s'], stderr=subprocess.DEVNULL
+        ).decode().strip()
+    except Exception:
+        commit_hash, commit_msg = '', ''
+    return {'git_commit': commit_hash, 'git_message': commit_msg}
+
+
 def build_ensemble(k, make_tree, env, model, logger, model_dir, env_name,
-                   **carpet_kwargs):
+                   description='', **carpet_kwargs):
     """
     Train k independent trees using run_carpet.
 
@@ -94,6 +109,9 @@ def build_ensemble(k, make_tree, env, model, logger, model_dir, env_name,
         Passed through to run_carpet.
     env_name : str
         Used for RunLogger subfolder naming and ensemble manifest.
+    description : str, optional
+        Free-text note recorded in the manifest (e.g. what changed in this run).
+        The current git commit hash and message are captured automatically.
     **carpet_kwargs
         Passed through to run_carpet and stored in the manifest.
 
@@ -134,6 +152,8 @@ def build_ensemble(k, make_tree, env, model, logger, model_dir, env_name,
         'k': k,
         'members': [{'index': i, 'run_id': rid} for i, rid in enumerate(member_run_ids)],
         'config': carpet_kwargs,
+        'description': description,
+        **_git_snapshot(),
     }
     manifest_path = f'./data/results/ensembles/{env_name}_{ensemble_id}.json'
     with open(manifest_path, 'w') as f:
