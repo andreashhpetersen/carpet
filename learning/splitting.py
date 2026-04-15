@@ -111,10 +111,10 @@ def poly_log_reg(X, y, degree=1, plot=False, max_iter=200, thresh=0.95, max_degr
 
 def split_on_reachability(tree, obs, mask, bounds,
                           min_empty_ratio=0.3,
-                          n_background=3000,
-                          density_radius_factor=3.0,
+                          n_background=10000,
+                          density_radius_factor=5.0,
                           acc_thresh=0.85,
-                          min_samples=20):
+                          min_samples=10):
     """
     Split leaves that contain large unreachable regions of the state space.
 
@@ -169,6 +169,10 @@ def split_on_reachability(tree, obs, mask, bounds,
 
     n_dims = bounds.shape[0]
     n_splits = 0
+    # Leaves identified as the unreachable side of a previous split.
+    # They have few training points by definition, so we must never try to
+    # split them again or we get an infinite loop.
+    unreachable_labels = set()
 
     changed = True
     while changed:
@@ -181,16 +185,18 @@ def split_on_reachability(tree, obs, mask, bounds,
         bg_labels    = tree.get_labels(bg_points)
 
         for leaf in tree.leaves():
-            if leaf.terminal:
+            if leaf.terminal or leaf.label in unreachable_labels:
                 continue
             r = leaf.label
 
             X_pos = all_states[state_labels == r]
             if len(X_pos) < min_samples:
+                print(f'  Region {r}: skip — too few training points ({len(X_pos)})')
                 continue
 
             X_bg = bg_points[bg_labels == r]
             if len(X_bg) < min_samples:
+                print(f'  Region {r}: skip — too few background points in leaf ({len(X_bg)})')
                 continue
 
             # Per-leaf density radius: factor × median k-NN distance.
@@ -206,10 +212,13 @@ def split_on_reachability(tree, obs, mask, bounds,
             bg_nn_dist, _ = bt.query(X_bg, k=1)
             X_neg = X_bg[bg_nn_dist[:, 0] > radius]
 
+            empty_ratio = len(X_neg) / (len(X_bg))
+            print(f'  Region {r}: n_pos={len(X_pos)}, n_bg={len(X_bg)}, '
+                  f'n_empty={len(X_neg)}, empty_ratio={empty_ratio:.2f}, radius={radius:.4f}')
+
             if len(X_neg) < min_samples:
                 continue
 
-            empty_ratio = len(X_neg) / (len(X_neg) + len(X_pos))
             if empty_ratio < min_empty_ratio:
                 continue
 
@@ -230,6 +239,9 @@ def split_on_reachability(tree, obs, mask, bounds,
                   f'(empty_ratio={empty_ratio:.2f}, acc={score:.3f}, '
                   f'radius={radius:.4f})')
             tree.split_leaf(X_fit, y_fit, leaf, pipe=pipe)
+            # Left child (pred=0, unreachable) keeps label r — exclude it from
+            # future attempts or the loop recurses into the empty side forever.
+            unreachable_labels.add(r)
             n_splits += 1
             changed = True
             break  # tree.leaves() is stale — restart
