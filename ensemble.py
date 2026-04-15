@@ -16,25 +16,54 @@ Build an ensemble of k trees, each trained independently via run_carpet:
 Each member tree gets its own RunLogger and subfolder under data/results/runs/.
 An ensemble manifest is saved to data/results/ensembles/{env}_{id}.json.
 
-Inference
----------
-The ensemble transition model works by scoring training points directly rather
-than enumerating intersection regions.  Given a current intersection region
-(r1, ..., rk) and a precomputed label matrix L of shape (n_points, k):
+Scoring-based transition model
+-------------------------------
+All inference uses score-weighted sampling over a fixed point set (either the
+training data or a mesh grid) rather than enumerating intersection regions.
+Given a current intersection region (r1, ..., rk) and a set of candidate points
+with precomputed label matrix L of shape (n_points, k):
 
     score(x_j) = prod_i  T_i[r_i, L[j, i]]
 
-Working in log space (sum of log probs) avoids underflow.  The predicted next
-state is the argmax training point; its row in L gives the predicted next
-intersection tuple.  For LL, scores are summed within each intersection region
-and normalised.
+Working in log space (sum of log probs) avoids underflow.  The score of a point
+is the joint probability that every tree assigns to that point's region, given
+the current region in that tree.  Phantom intersection regions — combinations
+that exist in the product of marginals but have no geometric area — naturally
+receive zero score and fall out without any special handling.
 
-Precompute the label matrix once and reuse it across all evaluation calls:
+Evaluation (training points)
+-----------------------------
+For LL and precision evaluation, the candidate set is the flattened training
+data.  Precompute once with build_label_matrix and reuse:
 
     all_obs, label_matrix = build_label_matrix(trees, obs, mask)
     per_tree, joint = evaluate_ensemble(trees, all_obs, label_matrix, obs, mask)
-    in_supp, top1 = estimate_precision_ensemble(
+    in_supp, top1, *eucl = estimate_precision_ensemble(
         trees, all_obs, label_matrix, env, model)
+
+Trajectory sampling (mesh grid)
+---------------------------------
+For simulation, the candidate set is a dense mesh over the state space bounds.
+Using a mesh rather than training points avoids repeated reuse of the same
+observed states and gives a geometrically faithful sample from the predicted
+next region.  At each step:
+
+  1. Score all mesh points from the current intersection region.
+  2. Sample the next state proportionally to the scores (softmax).
+  3. Update the current intersection region and repeat.
+
+    mesh, mesh_labels = build_mesh(trees, bounds, resolution=50)
+    trajectory = sample_ensemble_trajectory(
+        trees, mesh, mesh_labels, start_state, n_steps=100)
+
+Assessment
+----------
+Compare sampled trajectories against real environment trajectories using:
+  - Region sequence similarity: fraction of timesteps where sampled and real
+    trajectories share the same intersection region tuple.
+  - State distribution similarity: per-timestep Euclidean distance between
+    the mean of sampled trajectories and the mean of real trajectories, or
+    a KS test per dimension.
 """
 
 import json
@@ -387,3 +416,138 @@ def estimate_precision_ensemble(trees, all_obs, label_matrix, env, model, n_runs
     euclidean_true = total_euclidean_true / n_euclidean_true if n_euclidean_true > 0 else float('inf')
     euclidean_ratio = euclidean_error / euclidean_true if euclidean_true > 0 else float('nan')
     return in_support, top1, euclidean_error, euclidean_true, euclidean_ratio
+
+
+def build_mesh(trees, bounds, resolution=50):
+    """
+    Build a dense mesh grid over the state space and precompute region labels
+    for every mesh point in every tree.
+
+    Parameters
+    ----------
+    trees      : list of TreeObserver
+    bounds     : np.ndarray, shape (n_dims, 2) — [[lo, hi], ...] per dimension
+    resolution : int
+        Number of points per dimension.  Total mesh size = resolution ** n_dims.
+        For 2D this is resolution^2; be cautious for n_dims > 3.
+
+    Returns
+    -------
+    mesh        : np.ndarray, shape (n_points, n_dims)
+    mesh_labels : np.ndarray, shape (n_points, k), dtype int
+    """
+    axes = [np.linspace(bounds[d, 0], bounds[d, 1], resolution)
+            for d in range(bounds.shape[0])]
+    grid = np.meshgrid(*axes, indexing='ij')
+    mesh = np.stack([g.ravel() for g in grid], axis=1)
+    mesh_labels = np.stack(
+        [tree.get_labels(mesh) for tree in trees], axis=1
+    ).astype(int)
+    return mesh, mesh_labels
+
+
+def sample_ensemble_trajectory(trees, mesh, mesh_labels, start_state,
+                                n_steps=100, temperature=1.0):
+    """
+    Sample a trajectory from the ensemble transition model using a mesh grid.
+
+    At each step the mesh is scored from the current intersection region and
+    the next state is drawn proportionally to the scores (softmax with optional
+    temperature).  Using a mesh rather than training points avoids repeated
+    reuse of observed states and gives a geometrically faithful sample from the
+    predicted next region.  Phantom intersection regions receive zero score and
+    are excluded automatically.
+
+    Parameters
+    ----------
+    trees       : list of TreeObserver
+    mesh        : np.ndarray, shape (n_points, n_dims) — from build_mesh
+    mesh_labels : np.ndarray, shape (n_points, k)     — from build_mesh
+    start_state : np.ndarray, shape (n_dims,)
+    n_steps     : int
+    temperature : float
+        Scales the log-scores before softmax.  temperature=1.0 samples
+        proportionally to the raw scores; lower values concentrate mass on
+        high-scoring points (approaching argmax); higher values flatten the
+        distribution.
+
+    Returns
+    -------
+    trajectory : np.ndarray, shape (n_steps + 1, n_dims)
+        Row 0 is start_state; rows 1..n_steps are sampled next states.
+    """
+    trajectory = [start_state]
+    current = start_state
+    cache = {}
+
+    for _ in range(n_steps):
+        current_tuple = ensemble_region(trees, current)
+        log_scores = _log_score_points(trees, mesh_labels, current_tuple, cache)
+
+        finite_mask = np.isfinite(log_scores)
+        if not finite_mask.any():
+            # No reachable mesh points — stop early
+            break
+
+        scaled = log_scores[finite_mask] / temperature
+        scaled -= np.max(scaled)          # numerical stability
+        weights = np.exp(scaled)
+        weights /= weights.sum()
+
+        finite_indices = np.where(finite_mask)[0]
+        chosen = np.random.choice(finite_indices, p=weights)
+        current = mesh[chosen]
+        trajectory.append(current)
+
+    return np.array(trajectory)
+
+
+def assess_trajectories(trees, sampled_trajs, real_trajs):
+    """
+    Compare sampled ensemble trajectories against real environment trajectories.
+
+    Two complementary metrics are computed:
+
+    Region sequence similarity
+        For each pair of (sampled, real) trajectories truncated to the same
+        length, the fraction of timesteps where both share the same intersection
+        region tuple.  A value of 1.0 means perfect region-level agreement at
+        every step.
+
+    Mean state distance
+        At each timestep t, the Euclidean distance between the mean of all
+        sampled states and the mean of all real states.  Returned as an array
+        of length min(T_sampled, T_real) so the caller can plot it over time.
+
+    Parameters
+    ----------
+    trees        : list of TreeObserver
+    sampled_trajs : list of np.ndarray, each shape (T_s, n_dims)
+    real_trajs    : list of np.ndarray, each shape (T_r, n_dims)
+
+    Returns
+    -------
+    region_similarity : float  — mean fraction of matching region tuples
+    mean_state_dist   : np.ndarray — per-timestep distance between trajectory means
+    """
+    # Region sequence similarity
+    similarities = []
+    for s_traj, r_traj in zip(sampled_trajs, real_trajs):
+        T = min(len(s_traj), len(r_traj))
+        matches = 0
+        for t in range(T):
+            if ensemble_region(trees, s_traj[t]) == ensemble_region(trees, r_traj[t]):
+                matches += 1
+        similarities.append(matches / T if T > 0 else 0.0)
+    region_similarity = float(np.mean(similarities)) if similarities else 0.0
+
+    # Per-timestep mean state distance
+    T_max = min(
+        min(len(t) for t in sampled_trajs),
+        min(len(t) for t in real_trajs),
+    )
+    sampled_means = np.mean([t[:T_max] for t in sampled_trajs], axis=0)
+    real_means    = np.mean([t[:T_max] for t in real_trajs],    axis=0)
+    mean_state_dist = np.linalg.norm(sampled_means - real_means, axis=1)
+
+    return region_similarity, mean_state_dist
