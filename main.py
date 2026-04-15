@@ -49,6 +49,7 @@ if __name__ == '__main__':
     n_dims = config['n_dims']
     n_acts = config['n_acts']
     laplace = config.get('laplace', 0.0)
+    reachability_split = config.get('reachability_split', False)
 
     # load environment and model, and generate training data
     env = load_env(env_id)
@@ -67,8 +68,9 @@ if __name__ == '__main__':
 
     with ResultsLogger(model_dir, model_name) as logger:
 
-        # carve out unreachable space, then learn action mapping
-        split_on_reachability(tree, obs, mask, bounds)
+        # learn action mapping, optionally carve out unreachable space first
+        if reachability_split:
+            split_on_reachability(tree, obs, mask, bounds)
         split_on_action(tree, obs, acts, mask, thresh=0.99, ratio_thresh=0.98)
 
         logger.section('Initial action mapping')
@@ -111,7 +113,8 @@ if __name__ == '__main__':
                 t.initialize_single_region()
             if mark_terminal:
                 t.mark_terminal_states(obs, mask)
-            split_on_reachability(t, obs, mask, bounds)
+            if reachability_split:
+                split_on_reachability(t, obs, mask, bounds)
             split_on_action(t, obs, acts, mask, thresh=0.99, ratio_thresh=0.98)
             return t
 

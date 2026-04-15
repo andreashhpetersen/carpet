@@ -8,7 +8,8 @@ def bouncing_ball_config():
         'bounds': [(0,15),(-15,15)],
         'resolution': 400,
         'n_runs': 100,
-        'initial_preds': None,  # None → global reachability pre-split instead of axis predicates
+        'initial_preds': [(0,4),(1,0),(1,-4)],
+        'reachability_split': False,
         'pad_to_size': 401,
         'mark_terminal': False,
         'estimation_runs': 25,
@@ -30,6 +31,7 @@ def random_walk_config():
         'resolution': 1000,
         'n_runs': 1000,
         'initial_preds': [(0,1), (1,1)],
+        'reachability_split': True,
         'pad_to_size': 15,
         'mark_terminal': True,
         'estimation_runs': 100,
@@ -52,6 +54,7 @@ def cruise_control_config():
         'n_runs': 100,
         # splits on all 3 dims: unsafe distance, close following, reversing ego, reversing front
         'initial_preds': [(2, 0), (2, 30), (0, 0), (1, 0)],
+        'reachability_split': False,
         'pad_to_size': 121,
         'mark_terminal': False,
         'estimation_runs': 50,
