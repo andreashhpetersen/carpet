@@ -29,8 +29,8 @@ if __name__ == '__main__':
     resume_manifest = None
 
     # load config
-    config = load_config('random_walk')
-    # config = load_config('bouncing_ball')
+    # config = load_config('random_walk')
+    config = load_config('bouncing_ball')
     # config = load_config('cruise_control')
 
     model_name = config['model_name']
@@ -67,9 +67,9 @@ if __name__ == '__main__':
 
     with ResultsLogger(model_dir, model_name) as logger:
 
-        # learn initial action mapping, then carve out unreachable space
-        split_on_action(tree, obs, acts, mask, thresh=0.99, ratio_thresh=0.98)
+        # carve out unreachable space, then learn action mapping
         split_on_reachability(tree, obs, mask, bounds)
+        split_on_action(tree, obs, acts, mask, thresh=0.99, ratio_thresh=0.98)
 
         logger.section('Initial action mapping')
         logger.log(f'Regions: {tree.n_leaves}')
@@ -111,8 +111,8 @@ if __name__ == '__main__':
             )
             if mark_terminal:
                 t.mark_terminal_states(obs, mask)
-            split_on_action(t, obs, acts, mask, thresh=0.99, ratio_thresh=0.98)
             split_on_reachability(t, obs, mask, bounds)
+            split_on_action(t, obs, acts, mask, thresh=0.99, ratio_thresh=0.98)
             return t
 
         if load_manifest is not None:
