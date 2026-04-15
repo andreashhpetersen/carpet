@@ -35,11 +35,8 @@ ENV_ORDER = ['Random Walk', 'Bouncing Ball', 'Cruise Control']
 
 # Single-panel metrics in display order (precision handled separately as a pair)
 METRICS = [
-    ('ll',               'Log-likelihood',          'Log-likelihood'),
-    ('euclidean_error',  'Euclidean error (pred.)',  'Distance'),
-    ('euclidean_true',   'Euclidean error (true)',   'Distance'),
-    ('euclidean_ratio',  'Euclidean ratio',          'Ratio'),
-    ('n_regions',        'Number of regions',        'Regions'),
+    ('ll',        'Log-likelihood',    'Log-likelihood'),
+    ('n_regions', 'Number of regions', 'Regions'),
 ]
 
 
@@ -96,6 +93,68 @@ def plot_precision_pair(env_name, runs_with_labels, fig_path):
         ax.set_title(f'{env_name} — {ylabel}')
         if len(runs_with_labels) > 1:
             ax.legend(fontsize=9, loc='best')
+    fig.tight_layout()
+    os.makedirs(os.path.dirname(fig_path), exist_ok=True)
+    fig.savefig(fig_path)
+    plt.close(fig)
+
+
+def plot_euclidean(env_name, runs_with_labels, fig_path):
+    """
+    Single figure with two panels:
+      Left  — predicted and true euclidean error as lines, shaded area between them.
+      Right — euclidean ratio (pred / true) as a line, reference line at y=1.
+    """
+    prop_cycle = plt.rcParams['axes.prop_cycle'].by_key()['color']
+
+    fig, (ax_err, ax_ratio) = plt.subplots(1, 2, figsize=(11, 4))
+
+    for i, (label, (meta, rows)) in enumerate(runs_with_labels):
+        color = prop_cycle[i % len(prop_cycle)]
+
+        def get(col):
+            pairs = [(int(r['round']), float(r[col]))
+                     for r in rows if r.get(col, '') not in ('', 'None')]
+            if not pairs:
+                return [], []
+            xs, ys = zip(*pairs)
+            return list(xs), list(ys)
+
+        xs_p, ys_p = get('euclidean_error')
+        xs_t, ys_t = get('euclidean_true')
+        xs_r, ys_r = get('euclidean_ratio')
+
+        if xs_p:
+            ax_err.plot(xs_p, ys_p, marker='o', markersize=3, color=color,
+                        label=f'{label} pred')
+        if xs_t:
+            ax_err.plot(xs_t, ys_t, marker='o', markersize=3, color=color,
+                        linestyle='--', label=f'{label} true')
+        # Shade between pred and true where both are available on the same rounds
+        if xs_p and xs_t:
+            common = sorted(set(xs_p) & set(xs_t))
+            p_map = dict(zip(xs_p, ys_p))
+            t_map = dict(zip(xs_t, ys_t))
+            cy = [p_map[x] for x in common]
+            ty = [t_map[x] for x in common]
+            ax_err.fill_between(common, ty, cy, alpha=0.15, color=color)
+
+        if xs_r:
+            ax_ratio.plot(xs_r, ys_r, marker='o', markersize=3, color=color,
+                          label=label)
+
+    ax_err.set_xlabel('Round')
+    ax_err.set_ylabel('Distance')
+    ax_err.set_title(f'{env_name} — Euclidean error')
+    ax_err.legend(fontsize=8, loc='best')
+
+    ax_ratio.axhline(1.0, color='grey', linewidth=0.8, linestyle=':')
+    ax_ratio.set_xlabel('Round')
+    ax_ratio.set_ylabel('Ratio (pred / true)')
+    ax_ratio.set_title(f'{env_name} — Euclidean ratio')
+    if len(runs_with_labels) > 1:
+        ax_ratio.legend(fontsize=9, loc='best')
+
     fig.tight_layout()
     os.makedirs(os.path.dirname(fig_path), exist_ok=True)
     fig.savefig(fig_path)
@@ -256,7 +315,14 @@ def generate_report(env_filter=None):
         plot_precision_pair(env_name, runs_with_labels, prec_fig_path)
         body += make_latex_figure(prec_fig_path, f'Precision (1- and 2-step) over rounds for \\texttt{{{escape_latex(env_name)}}}.') + '\n'
 
-        # 3. Remaining metrics (euclidean_error, n_regions)
+        # 3. Euclidean errors + ratio
+        euc_fig_path = f'{FIG_DIR}/{env_name}_euclidean.pdf'
+        plot_euclidean(env_name, runs_with_labels, euc_fig_path)
+        body += make_latex_figure(euc_fig_path,
+            f'Euclidean error (predicted and true) with ratio over rounds '
+            f'for \\texttt{{{escape_latex(env_name)}}}.') + '\n'
+
+        # 4. Remaining single-panel metrics (n_regions)
         for col, ylabel, _ in METRICS[1:]:
             fig_path = f'{FIG_DIR}/{env_name}_{col}.pdf'
             plot_metric(env_name, runs_with_labels, col, ylabel, fig_path)
