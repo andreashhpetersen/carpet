@@ -20,9 +20,13 @@ from utils import pad_to_array, save_training_data, load_training_data, ResultsL
 
 if __name__ == '__main__':
 
-    # Set to a manifest path to skip training and load an existing ensemble, e.g.:
+    # Set to a manifest path to skip training and load a complete ensemble.
     # load_manifest = './data/results/ensembles/Random Walk_20260414_151801.json'
     load_manifest = None
+
+    # Set to a partial manifest path to resume an interrupted ensemble build.
+    # resume_manifest = './data/results/ensembles/Random Walk_20260415_112954.json'
+    resume_manifest = None
 
     # load config
     config = load_config('random_walk')
@@ -117,15 +121,16 @@ if __name__ == '__main__':
             logger.log(f'Loaded ensemble from {manifest_path} ({len(trees)} members)')
         else:
             ensemble_description = (
-            'split_on_action commit gate lowered to 0.80; '
-            'split_on_reachability added as initial step'
-        )
-        trees, manifest_path = build_ensemble(
+                'split_on_action commit gate lowered to 0.80; '
+                'split_on_reachability added as initial step'
+            )
+            trees, manifest_path = build_ensemble(
                 k=k,
                 make_tree=make_tree,
                 env=env, model=model, logger=logger, model_dir=model_dir,
                 env_name=model_name,
                 description=ensemble_description,
+                resume_manifest=resume_manifest,
                 **carpet_kwargs,
             )
 

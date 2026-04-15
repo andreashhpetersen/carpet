@@ -74,6 +74,7 @@ import numpy as np
 from datetime import datetime
 
 from analysis.metrics import evaluate
+from models.tree import TreeObserver
 from pipeline import run_carpet
 from utils import RunLogger
 
@@ -93,10 +94,31 @@ def _git_snapshot():
     return {'git_commit': commit_hash, 'git_message': commit_msg}
 
 
+def _write_manifest(path, ensemble_id, env_name, k, member_run_ids,
+                    config, description, status):
+    """Write (or overwrite) the ensemble manifest at path."""
+    manifest = {
+        'ensemble_id': ensemble_id,
+        'env': env_name,
+        'k': k,
+        'status': status,
+        'members': [{'index': i, 'run_id': rid} for i, rid in enumerate(member_run_ids)],
+        'config': config,
+        'description': description,
+        **_git_snapshot(),
+    }
+    with open(path, 'w') as f:
+        json.dump(manifest, f, indent=2)
+
+
 def build_ensemble(k, make_tree, env, model, logger, model_dir, env_name,
-                   description='', **carpet_kwargs):
+                   description='', resume_manifest=None, **carpet_kwargs):
     """
     Train k independent trees using run_carpet.
+
+    The manifest file is written immediately on start and updated after every
+    member completes, so a run interrupted mid-way leaves a valid partial
+    manifest.  Pass resume_manifest to pick up where a previous run left off.
 
     Parameters
     ----------
@@ -112,19 +134,49 @@ def build_ensemble(k, make_tree, env, model, logger, model_dir, env_name,
     description : str, optional
         Free-text note recorded in the manifest (e.g. what changed in this run).
         The current git commit hash and message are captured automatically.
-    **carpet_kwargs
-        Passed through to run_carpet and stored in the manifest.
+    resume_manifest : str or None
+        Path to a partial manifest from a previous interrupted run.  Already-
+        completed members are loaded from disk and skipped; training continues
+        from the next missing member.
 
     Returns
     -------
     trees : list of TreeObserver
     manifest_path : str
     """
-    ensemble_id = datetime.now().strftime('%Y%m%d_%H%M%S')
-    member_run_ids = []
-    trees = []
+    os.makedirs('./data/results/ensembles', exist_ok=True)
 
-    for i in range(k):
+    if resume_manifest is not None:
+        with open(resume_manifest) as f:
+            existing = json.load(f)
+        ensemble_id  = existing['ensemble_id']
+        manifest_path = resume_manifest
+        member_run_ids = [m['run_id'] for m in existing.get('members', [])]
+        description   = existing.get('description', description)
+
+        # Load already-completed trees from disk.
+        trees = []
+        for member in existing.get('members', []):
+            run_dir   = f"./data/results/runs/{env_name}_{member['run_id']}"
+            tree_path = os.path.join(run_dir, 'tree.joblib')
+            trees.append(TreeObserver.load(tree_path))
+
+        n_done = len(trees)
+        logger.log(f'Resuming ensemble {ensemble_id}: '
+                   f'{n_done}/{k} members already complete.')
+    else:
+        ensemble_id    = datetime.now().strftime('%Y%m%d_%H%M%S')
+        manifest_path  = f'./data/results/ensembles/{env_name}_{ensemble_id}.json'
+        member_run_ids = []
+        trees          = []
+        n_done         = 0
+
+        # Create the manifest immediately so it exists even if the run is interrupted.
+        _write_manifest(manifest_path, ensemble_id, env_name, k, member_run_ids,
+                        carpet_kwargs, description, status='in_progress')
+        logger.log(f'Ensemble manifest created at {manifest_path}')
+
+    for i in range(n_done, k):
         logger.section(f'Ensemble member {i + 1}/{k}')
 
         tree = make_tree()
@@ -145,21 +197,13 @@ def build_ensemble(k, make_tree, env, model, logger, model_dir, env_name,
         tree_path = os.path.join(run_logger.run_dir, 'tree.joblib')
         tree.save(tree_path)
 
-    os.makedirs('./data/results/ensembles', exist_ok=True)
-    manifest = {
-        'ensemble_id': ensemble_id,
-        'env': env_name,
-        'k': k,
-        'members': [{'index': i, 'run_id': rid} for i, rid in enumerate(member_run_ids)],
-        'config': carpet_kwargs,
-        'description': description,
-        **_git_snapshot(),
-    }
-    manifest_path = f'./data/results/ensembles/{env_name}_{ensemble_id}.json'
-    with open(manifest_path, 'w') as f:
-        json.dump(manifest, f, indent=2)
+        # Update manifest after each member so partial progress is always saved.
+        n_complete = i + 1
+        _write_manifest(manifest_path, ensemble_id, env_name, k, member_run_ids,
+                        carpet_kwargs, description,
+                        status='complete' if n_complete == k else 'in_progress')
+        logger.log(f'Manifest updated ({n_complete}/{k} members complete).')
 
-    logger.log(f'Ensemble manifest saved to {manifest_path}')
     return trees, manifest_path
 
 
