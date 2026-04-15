@@ -286,7 +286,7 @@ def split_on_action(tree, states, acts, mask, thresh=0.95, ratio_thresh=0.9):
 
                 leaf.action = None  # required by split_leaf
                 pipe, score = poly_log_reg(leaf.states, y, thresh=thresh, max_iter=1000)
-                if pipe is None or score < thresh:
+                if pipe is None or score < 0.80:
                     leaf.action = majority  # restore so the leaf stays usable
                     continue
 
