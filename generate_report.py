@@ -223,13 +223,63 @@ insufficient entropy reduction).
     learned transition model. Computed on held-out training trajectories. Higher (less
     negative) is better; a value of 0 would mean every transition is predicted with
     certainty.
-  \item[Euclidean error] For each observed transition $s_t \to s_{t+1}$, the tree predicts
-    the next region as the argmax of its transition row. Points are sampled uniformly from
-    the observed training states in that predicted region, and the mean Euclidean distance
-    to the actual next state $s_{t+1}$ is recorded. Lower is better. Unlike precision, this
-    metric is robust to small region misclassifications: predicting a neighbouring region
-    incurs a small error rather than a binary miss.
+  \item[Euclidean error (predicted)] For each observed transition $s_t \to s_{t+1}$, the
+    tree predicts the next region as the argmax of its transition row. Points are sampled
+    uniformly from the observed training states in that predicted region, and the mean
+    Euclidean distance to the actual next state $s_{t+1}$ is recorded. Lower is better.
+    Unlike precision, this metric is robust to small region misclassifications: predicting
+    a neighbouring region incurs a small error rather than a binary miss.
+  \item[Euclidean error (true)] The same computation, but sampling from the \emph{actual}
+    next region that $s_{t+1}$ belongs to. This is the irreducible spatial error given the
+    current partition resolution --- the best any predictor could achieve. It is expected to
+    decrease as the partition becomes finer.
+  \item[Euclidean ratio] Predicted error divided by true error. A ratio of 1.0 means the
+    correct region was predicted; values above 1.0 indicate how much further off the
+    prediction was relative to the partition's own spatial resolution.
 \end{description}
+
+\subsection*{Ensemble method}
+
+To improve transition estimates, an ensemble of $k$ independently trained tree partitions
+is built. Each member tree is trained on a different random sample of the collected
+training trajectories, providing diversity in the learned partitions.
+
+\paragraph{Intersection regions.}
+A state is characterised by its \emph{intersection region}: the tuple
+$(r_1, r_2, \ldots, r_k)$ of region labels, one per member tree. The intersection
+implicitly defines a finer-grained partition of the state space than any single tree.
+
+\paragraph{Transition model.}
+Rather than enumerating the exponentially large intersection-region space, the ensemble
+transition model scores training points directly. Given a current intersection region
+$(r_1, \ldots, r_k)$, the score of a candidate next training point $x_j$ is
+\[
+  \mathrm{score}(x_j) = \prod_{i=1}^{k} T_i[r_i,\, L_{ji}]
+\]
+where $T_i$ is the transition matrix of tree $i$ and $L_{ji}$ is the region label of
+$x_j$ in tree $i$. Working in log space, this is a sum of $k$ scalar lookups ---
+$O(n_{\text{points}} \times k)$ per query with no combinatorial blow-up.
+
+\paragraph{Prediction.}
+The predicted next state is $x^* = \arg\max_j \mathrm{score}(x_j)$. Its intersection
+region tuple $(L_{1j^*}, \ldots, L_{kj^*})$ is the predicted next intersection region.
+
+\paragraph{Log-likelihood.}
+The probability of the actual next intersection region is proportional to the total score
+mass landing on training points that share that intersection tuple:
+\[
+  P(\text{actual region} \mid \text{current}) =
+    \frac{\sum_{j \in \mathcal{R}_{\text{next}}} \mathrm{score}(x_j)}
+         {\sum_{j} \mathrm{score}(x_j)}
+\]
+where $\mathcal{R}_{\text{next}}$ is the set of training points in the actual next
+intersection region. The ensemble LL is the average log of this probability over all
+observed transitions.
+
+\paragraph{Euclidean error.}
+The ensemble euclidean error is the score-weighted mean distance from all training points
+to the actual next state --- the expected distance under the ensemble's full predictive
+distribution, not just the argmax.
 
 \subsection*{Trials and decisions}
 
@@ -239,19 +289,17 @@ insufficient entropy reduction).
     but with worse precision. All subsequent runs use \texttt{propagate=False}.
   \item \textbf{Stochastic fallback (tried and reverted).} The \texttt{no\_det\_groups} gate
     blocks regions where no deterministic transition grouping exists --- effectively blocking
-    all genuinely stochastic regions. A k=2 clustering fallback in probability space was
+    all genuinely stochastic regions. A $k{=}2$ clustering fallback in probability space was
     implemented to handle these. On Bouncing Ball it showed early gains but then degraded as
     rounds progressed (over-splitting). On Random Walk it was catastrophic: regions grew from
     7 to 89 in 7 rounds and precision collapsed. The fallback was reverted.
-  \item \textbf{Early stopping.} A patience-based log-likelihood early stopping criterion was
+  \item \textbf{Early stopping.} A patience-based log-likelihood stopping criterion was
     added (\texttt{ll\_patience=10}): training stops when LL has not improved by at least
     \texttt{min\_ll\_improvement} for the specified number of consecutive rounds.
-  \item \textbf{Ensemble.} To improve transition estimates, an ensemble of $k=5$ independently
-    trained tree partitions is built, each trained on a different random sample of the
-    training data. A factored (product-of-marginals) transition model is used to combine them.
-    Joint ensemble evaluation (in-support and top-1 precision over intersection regions)
-    is implemented but has not yet produced stable results due to memory constraints during
-    evaluation.
+  \item \textbf{Outer-product ensemble (abandoned).} An earlier ensemble transition model
+    computed the full outer product of per-tree marginals, producing a distribution over
+    all intersection tuples with nonzero probability. This caused memory exhaustion at
+    evaluation time and was replaced by the direct scoring approach described above.
 \end{itemize}
 
 \subsection*{Current status}
@@ -261,7 +309,8 @@ around 0.57--0.65. Bouncing Ball does not converge: irreducible stochasticity in
 and hit zones keeps heterogeneity above the splitting threshold indefinitely, so the region
 count grows without bound. Precision on Bouncing Ball is nonetheless high ($\approx$0.83--0.84)
 even without convergence, suggesting the partition is already capturing the dominant
-transition structure early. The results below reflect individual tree partitioning runs only.
+transition structure early. The results below reflect individual tree partitioning runs only;
+ensemble evaluation results will be added as they become available.
 
 """
 
