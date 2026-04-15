@@ -227,6 +227,22 @@ class TreeObserver:
         print(f"Tree loaded from {path}")
         return tree
 
+    def initialize_single_region(self):
+        """Bootstrap a valid tree structure with one effective leaf.
+
+        Creates a dummy AxisBranch at x[0] < bounds[0][0] - 1, which is
+        always False for any state within bounds, so all valid states route
+        to the right child.  The left child is a permanently empty leaf.
+
+        Use this before split_on_reachability when you want a global
+        reachability pre-split instead of axis-aligned initial predicates.
+        """
+        dummy_threshold = self.bounds[0][0] - 1.0
+        self.root = AxisBranch(0, dummy_threshold)
+        self.root.left.label = 0   # always empty
+        self.root.right.label = 1  # receives all valid states
+        self.n_leaves = 2
+
     def initialize_axis_branches(self, predicates):
         for var_idx, c in predicates:
             self._add_axis(var_idx, c)

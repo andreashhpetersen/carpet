@@ -57,10 +57,10 @@ if __name__ == '__main__':
     )
     obs, acts, _, mask = load_training_data(model_dir)
 
-    tree = TreeObserver(
-        n_dims=n_dims, n_acts=n_acts,
-        bounds=bounds, initial_preds=initial_preds
-    )
+    tree = TreeObserver(n_dims=n_dims, n_acts=n_acts, bounds=bounds,
+                        initial_preds=initial_preds)
+    if initial_preds is None:
+        tree.initialize_single_region()
 
     if mark_terminal:
         tree.mark_terminal_states(obs, mask)
@@ -105,10 +105,10 @@ if __name__ == '__main__':
         )
 
         def make_tree():
-            t = TreeObserver(
-                n_dims=n_dims, n_acts=n_acts,
-                bounds=bounds, initial_preds=initial_preds
-            )
+            t = TreeObserver(n_dims=n_dims, n_acts=n_acts, bounds=bounds,
+                             initial_preds=initial_preds)
+            if initial_preds is None:
+                t.initialize_single_region()
             if mark_terminal:
                 t.mark_terminal_states(obs, mask)
             split_on_reachability(t, obs, mask, bounds)

@@ -8,7 +8,7 @@ def bouncing_ball_config():
         'bounds': [(0,15),(-15,15)],
         'resolution': 400,
         'n_runs': 100,
-        'initial_preds': [(0,4),(1,0),(1,-4)],
+        'initial_preds': None,  # None → global reachability pre-split instead of axis predicates
         'pad_to_size': 401,
         'mark_terminal': False,
         'estimation_runs': 25,
