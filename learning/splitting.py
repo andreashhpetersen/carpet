@@ -114,7 +114,8 @@ def split_on_reachability(tree, obs, mask, bounds,
                           n_background=10000,
                           density_radius_factor=5.0,
                           acc_thresh=0.85,
-                          min_samples=10):
+                          min_samples=10,
+                          max_splits=None):
     """
     Split leaves that contain large unreachable regions of the state space.
 
@@ -154,6 +155,10 @@ def split_on_reachability(tree, obs, mask, bounds,
         Minimum poly_log_reg accuracy to commit a split.
     min_samples : int
         Minimum training / background points required in a leaf to attempt a split.
+    max_splits : int or None
+        Maximum total number of splits to commit. Prevents infinite loops when
+        the reachable set is non-convex and every reachable child still has
+        empty space. Defaults to 2 × tree.n_leaves at call time.
 
     Returns
     -------
@@ -169,6 +174,9 @@ def split_on_reachability(tree, obs, mask, bounds,
 
     n_dims = bounds.shape[0]
     n_splits = 0
+    # Default budget: 2 cuts per leaf entering the function.
+    if max_splits is None:
+        max_splits = 2 * tree.n_leaves
     # Leaves identified as the unreachable side of a previous split.
     # They have few training points by definition, so we must never try to
     # split them again or we get an infinite loop.
@@ -176,6 +184,9 @@ def split_on_reachability(tree, obs, mask, bounds,
 
     changed = True
     while changed:
+        if n_splits >= max_splits:
+            print(f'split_on_reachability: reached max_splits={max_splits}, stopping.')
+            break
         changed = False
 
         # Resample and relabel on every iteration — tree structure may have changed.
