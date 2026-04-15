@@ -152,6 +152,13 @@ def run_carpet(tree, env, model, logger, model_dir,
     best_ll = None
     rounds_without_improvement = 0
 
+    if run_logger is not None and n_dims == 2:
+        plot_tree_partition(
+            tree, draw_boundaries=True,
+            title='round_00_initial',
+            save_dir=run_logger.figs_dir
+        )
+
     for round_num in range(1, max_rounds + 1):
         logger.section(f'Round {round_num}')
 

@@ -1,11 +1,6 @@
 import numpy as np
-import gymnasium as gym
-import uppaal_gym
-from collections import defaultdict
-from itertools import combinations
 from configs import load_config
 
-from analysis.metrics import estimate_precision_model, estimate_precision_tree, evaluate
 from envs.load import load_env
 from learning.splitting import split_on_action, split_on_reachability
 from models.policy import load_or_train_model
@@ -13,9 +8,8 @@ from models.tree import TreeObserver
 from ensemble import (build_ensemble, load_ensemble, build_label_matrix,
                       evaluate_ensemble, estimate_precision_ensemble)
 from pipeline import run_carpet, run_carpet_fixed, sample_next_states
-from viz.plotting import plot_tree_partition
 
-from utils import pad_to_array, save_training_data, load_training_data, ResultsLogger, RunLogger
+from utils import load_training_data, ResultsLogger, RunLogger
 
 
 if __name__ == '__main__':
@@ -58,32 +52,7 @@ if __name__ == '__main__':
     )
     obs, acts, _, mask = load_training_data(model_dir)
 
-    tree = TreeObserver(n_dims=n_dims, n_acts=n_acts, bounds=bounds,
-                        initial_preds=initial_preds)
-    if initial_preds is None:
-        tree.initialize_single_region()
-
-    if mark_terminal:
-        tree.mark_terminal_states(obs, mask)
-
     with ResultsLogger(model_dir, model_name) as logger:
-
-        # learn action mapping, optionally carve out unreachable space first
-        if reachability_split:
-            split_on_reachability(tree, obs, mask, bounds)
-        split_on_action(tree, obs, acts, mask, thresh=0.99, ratio_thresh=0.98)
-
-        logger.section('Initial action mapping')
-        logger.log(f'Regions: {tree.n_leaves}')
-
-        if n_dims == 2:
-            plot_tree_partition(
-                tree,
-                title=f"{model_name} - Initial action mapping",
-                draw_boundaries=True,
-                points=obs, acts=acts, mask=mask,
-                save_dir='./data/figs/'
-            )
 
         het_thresh = config.get('het_thresh', 0.1)
         propagate = False
