@@ -7,7 +7,7 @@ from configs import load_config
 
 from analysis.metrics import estimate_precision_model, estimate_precision_tree, evaluate
 from envs.load import load_env
-from learning.splitting import split_on_action
+from learning.splitting import split_on_action, split_on_reachability
 from models.policy import load_or_train_model
 from models.tree import TreeObserver
 from ensemble import (build_ensemble, load_ensemble, build_label_matrix,
@@ -21,13 +21,13 @@ from utils import pad_to_array, save_training_data, load_training_data, ResultsL
 if __name__ == '__main__':
 
     # Set to a manifest path to skip training and load an existing ensemble, e.g.:
-    load_manifest = './data/results/ensembles/Random Walk_20260414_151801.json'
-    # load_manifest = None
+    # load_manifest = './data/results/ensembles/Random Walk_20260414_151801.json'
+    load_manifest = None
 
     # load config
-    config = load_config('random_walk')
+    # config = load_config('random_walk')
     # config = load_config('bouncing_ball')
-    # config = load_config('cruise_control')
+    config = load_config('cruise_control')
 
     model_name = config['model_name']
     env_id = config['env_id']
@@ -63,9 +63,9 @@ if __name__ == '__main__':
 
     with ResultsLogger(model_dir, model_name) as logger:
 
-        # learn initial action mapping
+        # learn initial action mapping, then carve out unreachable space
         split_on_action(tree, obs, acts, mask, thresh=0.99, ratio_thresh=0.98)
-        tree.reorder_leaf_labels()
+        split_on_reachability(tree, obs, mask, bounds)
 
         logger.section('Initial action mapping')
         logger.log(f'Regions: {tree.n_leaves}')
@@ -83,7 +83,7 @@ if __name__ == '__main__':
         propagate = False
         k = 5
 
-        max_regions = 60
+        max_regions = 200
         min_ll_improvement = 0.01
         ll_patience = 10
 
@@ -108,7 +108,7 @@ if __name__ == '__main__':
             if mark_terminal:
                 t.mark_terminal_states(obs, mask)
             split_on_action(t, obs, acts, mask, thresh=0.99, ratio_thresh=0.98)
-            t.reorder_leaf_labels()
+            split_on_reachability(t, obs, mask, bounds)
             return t
 
         if load_manifest is not None:

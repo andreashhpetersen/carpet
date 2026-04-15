@@ -109,6 +109,136 @@ def poly_log_reg(X, y, degree=1, plot=False, max_iter=200, thresh=0.95, max_degr
     return best_pipe, best_score
 
 
+def split_on_reachability(tree, obs, mask, bounds,
+                          min_empty_ratio=0.3,
+                          n_background=3000,
+                          density_radius_factor=3.0,
+                          acc_thresh=0.85,
+                          min_samples=20):
+    """
+    Split leaves that contain large unreachable regions of the state space.
+
+    For each leaf, background points are sampled uniformly from the full
+    state-space bounds and filtered to those that land inside the leaf.
+    Background points that are further than a per-leaf density radius from
+    any observed training point are labelled 'empty' (unreachable).  If the
+    fraction of empty background points exceeds min_empty_ratio, a polynomial
+    boundary is fitted between the observed (reachable, y=1) and empty
+    (unreachable, y=0) sides.  The split is committed only when the boundary
+    achieves at least acc_thresh held-out accuracy.
+
+    The density radius is set per-leaf as density_radius_factor × the median
+    k-nearest-neighbour distance among the leaf's own training points, so it
+    adapts automatically to local point density.
+
+    This should be called after split_on_action as an initial preprocessing
+    step, before CARPET refines the transition structure.  Making region
+    geometry tight around the reachable set improves both formal verification
+    (no spurious states) and mesh-based trajectory sampling (no mesh points
+    in empty space).
+
+    Parameters
+    ----------
+    tree : TreeObserver
+    obs : ndarray, shape (N, K) or (n_runs, n_steps, K)
+    mask : boolean ndarray
+    bounds : ndarray, shape (n_dims, 2)  —  bounds[i] = [lo, hi]
+    min_empty_ratio : float
+        Minimum fraction of in-leaf background points classified as empty
+        before a split is attempted.
+    n_background : int
+        Number of background points sampled per iteration.
+    density_radius_factor : float
+        Multiplier on median NN distance that defines the reachable neighbourhood.
+    acc_thresh : float
+        Minimum poly_log_reg accuracy to commit a split.
+    min_samples : int
+        Minimum training / background points required in a leaf to attempt a split.
+
+    Returns
+    -------
+    n_splits : int
+    """
+    if obs.ndim == 3:
+        flat_obs = obs.reshape(-1, obs.shape[-1])
+        flat_mask = mask.reshape(-1).astype(bool)
+    else:
+        flat_obs = obs
+        flat_mask = mask.astype(bool)
+    all_states = flat_obs[flat_mask]
+
+    n_dims = bounds.shape[0]
+    n_splits = 0
+
+    changed = True
+    while changed:
+        changed = False
+
+        # Resample and relabel on every iteration — tree structure may have changed.
+        bg_points    = np.random.uniform(bounds[:, 0], bounds[:, 1],
+                                         size=(n_background, n_dims))
+        state_labels = tree.get_labels(all_states)
+        bg_labels    = tree.get_labels(bg_points)
+
+        for leaf in tree.leaves():
+            if leaf.terminal:
+                continue
+            r = leaf.label
+
+            X_pos = all_states[state_labels == r]
+            if len(X_pos) < min_samples:
+                continue
+
+            X_bg = bg_points[bg_labels == r]
+            if len(X_bg) < min_samples:
+                continue
+
+            # Per-leaf density radius: factor × median k-NN distance.
+            k = min(5, len(X_pos))
+            bt = BallTree(X_pos)
+            nn_dist, _ = bt.query(X_pos, k=k)
+            median_nn = np.median(nn_dist[:, -1])
+            if median_nn == 0:
+                continue
+            radius = density_radius_factor * median_nn
+
+            # Background points further than radius from any training point → empty.
+            bg_nn_dist, _ = bt.query(X_bg, k=1)
+            X_neg = X_bg[bg_nn_dist[:, 0] > radius]
+
+            if len(X_neg) < min_samples:
+                continue
+
+            empty_ratio = len(X_neg) / (len(X_neg) + len(X_pos))
+            if empty_ratio < min_empty_ratio:
+                continue
+
+            # Subsample to keep fitting fast.
+            max_fit = 2000
+            idx_pos = np.random.choice(len(X_pos), min(max_fit, len(X_pos)), replace=False)
+            idx_neg = np.random.choice(len(X_neg), min(max_fit, len(X_neg)), replace=False)
+            X_fit = np.vstack([X_neg[idx_neg], X_pos[idx_pos]])
+            y_fit = np.array([0] * len(idx_neg) + [1] * len(idx_pos))
+
+            pipe, score = poly_log_reg(X_fit, y_fit, thresh=acc_thresh)
+            if pipe is None or score < acc_thresh:
+                print(f'  Region {r}: reachability split skipped '
+                      f'(empty_ratio={empty_ratio:.2f}, acc={score:.3f})')
+                continue
+
+            print(f'  Region {r}: reachability split committed '
+                  f'(empty_ratio={empty_ratio:.2f}, acc={score:.3f}, '
+                  f'radius={radius:.4f})')
+            tree.split_leaf(X_fit, y_fit, leaf, pipe=pipe)
+            n_splits += 1
+            changed = True
+            break  # tree.leaves() is stale — restart
+
+    tree.reorder_leaf_labels()
+    print(f'split_on_reachability: {n_splits} splits committed.')
+    return n_splits
+
+
 def split_on_action(tree, states, acts, mask, thresh=0.95, ratio_thresh=0.9):
     """
     Learn an initial mapping from regions to actions by splitting leaves that
