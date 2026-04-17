@@ -6,7 +6,8 @@ from learning.splitting import split_on_action, split_on_reachability
 from models.policy import load_or_train_model
 from models.tree import TreeObserver
 from ensemble import (build_ensemble, load_ensemble, build_label_matrix,
-                      evaluate_ensemble, estimate_precision_ensemble)
+                      evaluate_ensemble, estimate_precision_ensemble,
+                      save_eval_results)
 from pipeline import run_carpet, run_carpet_fixed, sample_next_states
 
 from utils import load_training_data, ResultsLogger, RunLogger
@@ -15,8 +16,8 @@ from utils import load_training_data, ResultsLogger, RunLogger
 if __name__ == '__main__':
 
     # Set to a manifest path to skip training and load a complete ensemble.
-    # load_manifest = './data/results/ensembles/Random Walk_20260414_151801.json'
     load_manifest = None
+    # load_manifest = './data/results/ensembles/Cruise Control_20260415_111039.json'
 
     # Set to a partial manifest path to resume an interrupted ensemble build.
     # resume_manifest = './data/results/ensembles/Random Walk_20260415_112954.json'
@@ -58,7 +59,7 @@ if __name__ == '__main__':
         propagate = False
         k = 5
 
-        max_regions = 200
+        max_regions = 150
         min_ll_improvement = 0.01
         ll_patience = 10
 
@@ -84,7 +85,7 @@ if __name__ == '__main__':
                 t.mark_terminal_states(obs, mask)
             if reachability_split:
                 split_on_reachability(t, obs, mask, bounds)
-            split_on_action(t, obs, acts, mask, thresh=0.99, ratio_thresh=0.98)
+            # split_on_action(t, obs, acts, mask, thresh=0.99, ratio_thresh=0.98)
             return t
 
         if load_manifest is not None:
@@ -93,8 +94,7 @@ if __name__ == '__main__':
             logger.log(f'Loaded ensemble from {manifest_path} ({len(trees)} members)')
         else:
             ensemble_description = (
-                'split_on_action commit gate lowered to 0.80; '
-                'split_on_reachability added as initial step'
+                'No split on action'
             )
             trees, manifest_path = build_ensemble(
                 k=k,
@@ -128,6 +128,22 @@ if __name__ == '__main__':
         logger.log(f'Ensemble precision — in-support: {in_support:.4f},  top-1: {top1:.4f}')
         logger.log(f'Ensemble euclidean error — predicted: {ens_euclidean:.4f}, '
                    f'true: {ens_euclidean_true:.4f}, ratio: {ens_euclidean_ratio:.4f}')
+
+        save_eval_results(manifest_path, {
+            'per_tree_ll_mean':   float(np.mean(lls)),
+            'per_tree_ll_std':    float(np.std(lls)),
+            'per_tree_perp_mean': float(np.mean(perps)),
+            'per_tree_perp_std':  float(np.std(perps)),
+            'joint_ll':           float(joint_ll),
+            'joint_perp':         float(joint_perp),
+            'n_zero':             int(n_zero),
+            'n_total':            int(n_total),
+            'precision_in_support': float(in_support),
+            'precision_top1':       float(top1),
+            'euclidean_pred':     float(ens_euclidean),
+            'euclidean_true':     float(ens_euclidean_true),
+            'euclidean_ratio':    float(ens_euclidean_ratio),
+        })
 
         # Single-run alternative (comment out build_ensemble above and use this):
         # run_logger = RunLogger(env_name=model_name, config_dict=carpet_kwargs,

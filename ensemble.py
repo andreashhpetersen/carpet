@@ -207,6 +207,24 @@ def build_ensemble(k, make_tree, env, model, logger, model_dir, env_name,
     return trees, manifest_path
 
 
+def save_eval_results(manifest_path, eval_dict):
+    """
+    Append evaluation results to an existing ensemble manifest.
+
+    Parameters
+    ----------
+    manifest_path : str
+    eval_dict : dict
+        Keys and values to store under the top-level 'eval' key.
+        All values must be JSON-serialisable (use plain Python floats/ints).
+    """
+    with open(manifest_path) as f:
+        manifest = json.load(f)
+    manifest['eval'] = eval_dict
+    with open(manifest_path, 'w') as f:
+        json.dump(manifest, f, indent=2)
+
+
 def load_ensemble(manifest_path):
     """
     Load a previously built ensemble from disk.
