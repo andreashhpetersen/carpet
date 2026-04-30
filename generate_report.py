@@ -379,7 +379,7 @@ def make_eval_table(ensembles, ens_labels, ens_descriptions):
                 r' \\' + '\n'
             )
         else:
-            row = f'  {escape_latex(label)} & {k} & \\multicolumn{{8}}{{c}}{{---}} \\\\\n'
+            row = f'  {escape_latex(label)} & {k} & \\multicolumn{{7}}{{c}}{{---}} \\\\\n'
         rows += row
 
     footer = (
@@ -395,6 +395,153 @@ def make_eval_table(ensembles, ens_labels, ens_descriptions):
     )
     return header + rows + footer
 
+
+ALGORITHM_SECTION = r"""
+\newpage
+\section*{Partitioning Algorithm}
+
+CARPET refines a tree-structured partition of the state space across repeated rounds.
+Each round samples simulated transitions from the environment, scores every region by
+how heterogeneous its transition behaviour is, and attempts to split the most
+heterogeneous regions. A round ends when no region remains above the heterogeneity
+threshold, the region budget is exhausted, or log-likelihood has stopped improving.
+
+\paragraph{Heterogeneity.}
+For each observed training point $s$ in region $r$, the environment is queried
+$n_s$ times from $s$ to produce an empirical next-region distribution $p_s$.
+The within-region heterogeneity is the mean total-variation distance from the
+region mean:
+\[
+  h_r \;=\; \frac{1}{|S_r|}\sum_{s \in S_r} \tfrac{1}{2}\|p_s - \bar{p}_r\|_1,
+  \qquad \bar{p}_r = \frac{1}{|S_r|}\sum_{s \in S_r} p_s.
+\]
+Regions with $h_r < \theta_h$ are considered homogeneous and skipped.
+
+\paragraph{Split selection.}
+Regions above $\theta_h$ are placed in a max-priority queue ordered by $h_r$ and
+processed greedily. Each candidate passes through six gates before a split is committed.
+Gates~1--3 check structural preconditions; gates~4--6 evaluate split quality.
+Figure~\ref{fig:carpet_algorithm} shows the full procedure.
+
+\paragraph{Polynomial boundary.}
+When all gates pass, two groups of states are defined by agglomerative clustering
+of the transition probability vectors (k set by the number of distinct deterministic
+target groups, then collapsed to $k{=}2$ via centroid re-clustering if needed).
+These group labels become the binary target $y \in \{0,1\}$.
+A polynomial logistic regression pipeline (standardisation $\to$ degree-$d$ features
+$\to$ logistic regression, $d = 1\ldots5$) is fitted on the state coordinates with
+target $y$. The degree with the best held-out accuracy is selected, preferring lower
+degree unless a higher degree improves accuracy by at least 0.01. The boundary is
+committed only when held-out accuracy reaches 0.9 (gate~6).
+
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}[
+  node distance=2.5mm and 0mm,
+  box/.style={
+    rectangle, draw, rounded corners=3pt,
+    minimum width=54mm, minimum height=7mm, text width=52mm,
+    text centered, fill=white, font=\small, align=center},
+  gate/.style={
+    circle, draw, minimum size=9mm,
+    text centered, fill=white, font=\small\bfseries},
+  decision/.style={
+    diamond, draw, aspect=2.5,
+    minimum width=38mm, minimum height=7mm,
+    text centered, fill=white, font=\small, inner sep=0pt, align=center},
+  rej/.style={
+    rectangle, draw, fill=gray!15, rounded corners=2pt,
+    minimum width=14mm, minimum height=7mm,
+    text centered, font=\scriptsize},
+  endbox/.style={
+    rectangle, draw, rounded corners=3pt,
+    minimum width=28mm, minimum height=7mm,
+    text centered, fill=black!12, font=\small\bfseries},
+  arr/.style={-Stealth, semithick},
+]
+
+%% --- Main column ---
+\node[box, fill=blue!7] (init)
+  {Initial partition: \texttt{split\_on\_action}\\
+   (\texttt{split\_on\_reachability} if enabled)};
+\node[box, below=9mm of init] (sample)
+  {Sample $n_s$ next states per observed point};
+\node[box, below=of sample] (het)
+  {Compute $h_r = \overline{\mathrm{TV}}(p_s,\,\bar{p}_r)$ for each region $r$};
+\node[box, below=9mm of het, fill=orange!7] (pop)
+  {Pop highest-$h_r$ region $r$ \quad (skip if $h_r < \theta_h$)};
+\node[gate, below=5mm of pop, minimum width=14mm, minimum height=9mm] (g13)
+  {$G_{1\text{-}3}$};
+\node[box,  below=5mm of g13]   (clust)
+  {Cluster $\{p_s\}$ into $k$ groups; collapse to $k{=}2$};
+\node[gate, below=5mm of clust, minimum width=14mm, minimum height=9mm] (g46)
+  {$G_{4\text{-}6}$};
+\node[box, below=5mm of g46, fill=green!7] (commit)
+  {Fit polynomial on state coords $\times$ cluster labels; commit split};
+\node[decision, below=8mm of commit] (hdone) {Heap empty\\or budget?};
+\node[box, below=of hdone] (eval)
+  {Update $T$; evaluate LL, precision, Euclidean};
+\node[decision, below=of eval] (conv) {Converged?};
+\node[endbox, below=8mm of conv] (done) {\textbf{Done}};
+
+%% --- Reject boxes, placed right of each gate ---
+\node[rej] (rej_a) at ([xshift=38mm]g13) {reject};
+\node[rej] (rej_b) at ([xshift=38mm]g46) {reject};
+
+%% --- Main flow ---
+\draw[arr, dashed] (init)   -- node[right, font=\scriptsize]{once} (sample);
+\draw[arr] (sample) -- (het);
+\draw[arr] (het)    -- node[right, font=\scriptsize]{split loop} (pop);
+\draw[arr] (pop)    -- (g13);
+\draw[arr] (g13)    -- (clust);
+\draw[arr] (clust)  -- (g46);
+\draw[arr] (g46)    -- (commit);
+\draw[arr] (commit) -- (hdone);
+\draw[arr] (hdone)  -- node[left, font=\scriptsize]{yes} (eval);
+\draw[arr] (eval)   -- (conv);
+\draw[arr] (conv)   -- node[left, font=\scriptsize]{yes} (done);
+
+%% --- Gate exits: straight right to reject boxes ---
+\draw[arr] (g13.east) -- (rej_a);
+\draw[arr] (g46.east) -- (rej_b);
+
+%% --- Rail: rej_a and rej_b feed a vertical rail back to pop ---
+\coordinate (Rail) at ($(rej_a.east)+(8mm,0)$);
+\draw (rej_a.east) -- (Rail |- rej_a);
+\draw (rej_b.east) -- (Rail |- rej_b);
+\draw[arr] (Rail |- rej_b) -- (Rail |- pop) -- (pop.east);
+
+%% --- Left-side loops ---
+\draw[arr] (hdone.west) -- ++(-12mm,0) |-
+  node[pos=0.15, left, font=\scriptsize]{no} (pop.west);
+\draw[arr] (conv.west) -- ++(-20mm,0) |-
+  node[pos=0.08, left, font=\scriptsize]{no} (sample.west);
+
+\end{tikzpicture}
+
+\medskip\small
+\begin{tabular}{@{}ll@{\quad}ll@{}}
+  $G_1$ & Terminal region &
+  $G_4$ & Balance $< \theta_b$ \\
+  $G_2$ & $|S_r| < 10$ &
+  $G_5$ & Entropy reduction $< \theta_e$ \\
+  $G_3$ & Deterministic groups $\leq 1$ &
+  $G_6$ & Poly.\ fit $R^2 < 0.9$ \\
+\end{tabular}
+
+\noindent $G_{1\text{-}3}$: structural preconditions checked before clustering.
+$G_{4\text{-}6}$: split-quality checks after clustering.
+
+\caption{CARPET partitioning procedure. Initialisation (dashed) runs once.
+Each round samples transitions, scores heterogeneity $h_r$, and greedily
+processes the highest-$h_r$ candidates through gates $G_1$--$G_6$ (legend above).
+Failures from $G_1$--$G_3$ (structural preconditions) and $G_4$--$G_6$ (split
+quality) re-enter the loop at the next pop. After all candidates are exhausted
+the transition matrix is updated, metrics evaluated, and convergence checked.}
+\label{fig:carpet_algorithm}
+\end{figure}
+
+"""
 
 INTRO = r"""
 \section*{Summary}
@@ -665,6 +812,9 @@ def generate_report(env_filter=None):
         r'\usepackage{booktabs}' + '\n'
         r'\usepackage{hyperref}' + '\n'
         r'\usepackage{geometry}' + '\n'
+        r'\usepackage{amsmath}' + '\n'
+        r'\usepackage{tikz}' + '\n'
+        r'\usetikzlibrary{arrows.meta,shapes.geometric,positioning,calc}' + '\n'
         r'\geometry{margin=2.5cm}' + '\n'
         r'\title{CARPET Experiment Results}' + '\n'
         r'\author{}' + '\n'
@@ -673,14 +823,17 @@ def generate_report(env_filter=None):
         r'\maketitle' + '\n\n'
     )
     doc += INTRO
+    doc += ALGORITHM_SECTION
     doc += '\n'.join(sections)
     doc += '\n\\end{document}\n'
 
+    # Write the .tex last so that any auto-compile triggered by the editor
+    # only fires after all figure PDFs are already on disk.
     with open(REPORT_PATH, 'w') as f:
         f.write(doc)
 
-    print(f'Report written to {REPORT_PATH}')
     print(f'Figures saved to {FIG_DIR}/')
+    print(f'Report written to {REPORT_PATH}')
     print(f'Compile with: pdflatex -interaction=nonstopmode -output-directory data/results data/results/report.tex')
 
 

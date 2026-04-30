@@ -24,8 +24,8 @@ if __name__ == '__main__':
     resume_manifest = None
 
     # load config
-    # config = load_config('random_walk')
-    config = load_config('bouncing_ball')
+    config = load_config('random_walk')
+    # config = load_config('bouncing_ball')
     # config = load_config('cruise_control')
 
     model_name = config['model_name']
