@@ -196,6 +196,192 @@ def estimate_euclidean_error(tree, obs, mask, n_samples=20):
     return pred_error, true_error, ratio
 
 
+def _run_labels_from_obs(tree, obs, mask):
+    """Extract per-run label sequences from observation arrays."""
+    run_labels = []
+    for run, run_mask in zip(obs, mask):
+        valid = run[run_mask]
+        if len(valid) > 1:
+            run_labels.append(tree.get_labels(valid))
+    return run_labels
+
+
+def _precompute_T_powers(T, n_regions, max_k):
+    """Return list of T^1, T^2, ..., T^max_k."""
+    Tk = np.eye(n_regions)
+    T_powers = []
+    for _ in range(max_k):
+        Tk = Tk @ T
+        T_powers.append(Tk.copy())
+    return T_powers
+
+
+def _build_emp_Tk(run_labels, n_regions, k, laplace):
+    """
+    Build and row-normalise the empirical k-step count matrix, and collect
+    all observed (i, j) pairs at lag k.
+    """
+    emp_counts = np.full((n_regions, n_regions), laplace)
+    pairs = []
+    for labels in run_labels:
+        for t in range(len(labels) - k):
+            i, j = int(labels[t]), int(labels[t + k])
+            emp_counts[i, j] += 1
+            pairs.append((i, j))
+    row_sums = emp_counts.sum(axis=1, keepdims=True)
+    row_sums[row_sums == 0] = 1
+    return emp_counts / row_sums, pairs
+
+
+def kstep_precision(tree, obs, mask, max_k=5, top_x=1, laplace=0.0):
+    """
+    Evaluate k-step region prediction precision for k = 1 .. max_k.
+
+    Two curves are returned for each value of top_x:
+
+    matrix_power_curve : list of float, length max_k
+        Fraction of observed k-step transitions where the true next region
+        is among the top-x most likely regions under T^k[alpha(s_t)].
+
+    empirical_curve : list of float, length max_k
+        Same, but using the empirical k-step count matrix built directly
+        from the trajectory data.  This is the best achievable precision
+        at horizon k given the partition, without any Markov assumption.
+
+    Comparing the two curves shows whether the 1-step Markov model composes
+    correctly across steps.
+
+    Parameters
+    ----------
+    tree    : TreeObserver with tree.T set (1-step transition matrix)
+    obs     : np.ndarray, shape (n_runs, T, n_dims)
+    mask    : np.ndarray, shape (n_runs, T), bool
+    max_k   : int
+    top_x   : int
+        Number of most-likely regions to consider a prediction correct.
+        top_x=1 is standard top-1 precision (argmax).
+    laplace : float
+        Laplace smoothing for the empirical k-step matrices.
+
+    Returns
+    -------
+    matrix_power_curve : list of float, length max_k
+    empirical_curve    : list of float, length max_k
+    n_transitions      : list of int, length max_k  (number of pairs at each k)
+    """
+    n_regions = tree.n_leaves
+    run_labels = _run_labels_from_obs(tree, obs, mask)
+    T_powers = _precompute_T_powers(tree.T, n_regions, max_k)
+
+    matrix_power_curve = []
+    empirical_curve    = []
+    n_transitions_list = []
+
+    for k in range(1, max_k + 1):
+        emp_T_k, pairs = _build_emp_Tk(run_labels, n_regions, k, laplace)
+
+        if not pairs:
+            matrix_power_curve.append(float('nan'))
+            empirical_curve.append(float('nan'))
+            n_transitions_list.append(0)
+            continue
+
+        # Top-x indices per row (argsort ascending → take last top_x)
+        mat_topx = np.argsort(T_powers[k - 1], axis=1)[:, -top_x:]  # (n_regions, top_x)
+        emp_topx = np.argsort(emp_T_k,          axis=1)[:, -top_x:]
+
+        n_correct_mat = sum(1 for i, j in pairs if j in mat_topx[i])
+        n_correct_emp = sum(1 for i, j in pairs if j in emp_topx[i])
+
+        n = len(pairs)
+        matrix_power_curve.append(n_correct_mat / n)
+        empirical_curve.append(n_correct_emp / n)
+        n_transitions_list.append(n)
+
+    return matrix_power_curve, empirical_curve, n_transitions_list
+
+
+def kstep_coverage(tree, obs, mask, max_k=5, prob=0.9, laplace=0.0):
+    """
+    For each k, compute the expected number of regions needed to cover at
+    least `prob` of the probability mass after k steps, averaged over
+    observed k-step transitions (weighted by visit frequency).
+
+    This answers the question: "How many regions do I need to name to be
+    confident that the system will be in one of them with probability >= p
+    after k steps?"
+
+    Two curves are returned:
+
+    mat_coverage : list of float, length max_k
+        Mean coverage size under T^k (matrix power of the learned 1-step model).
+
+    emp_coverage : list of float, length max_k
+        Mean coverage size under the empirical k-step count matrix.
+
+    The coverage size for a given starting region i is:
+        min |S| such that sum_{j in S} T^k[i,j] >= prob,
+        where S is built greedily by taking the highest-probability regions first.
+
+    Parameters
+    ----------
+    tree    : TreeObserver with tree.T set (1-step transition matrix)
+    obs     : np.ndarray, shape (n_runs, T, n_dims)
+    mask    : np.ndarray, shape (n_runs, T), bool
+    max_k   : int
+    prob    : float in (0, 1]
+        Probability mass threshold.
+    laplace : float
+        Laplace smoothing for the empirical k-step matrices.
+
+    Returns
+    -------
+    mat_coverage : list of float, length max_k
+    emp_coverage : list of float, length max_k
+    n_transitions : list of int, length max_k
+    """
+    n_regions = tree.n_leaves
+    run_labels = _run_labels_from_obs(tree, obs, mask)
+    T_powers = _precompute_T_powers(tree.T, n_regions, max_k)
+
+    def _coverage_sizes(prob_matrix):
+        """
+        For each row of prob_matrix, return the number of regions needed
+        to reach `prob` cumulative probability (greedy, highest-first).
+        Returns an array of shape (n_regions,).
+        """
+        sorted_desc = np.sort(prob_matrix, axis=1)[:, ::-1]  # (n_regions, n_regions)
+        cumsum = np.cumsum(sorted_desc, axis=1)
+        # First column index where cumsum >= prob; clamp to n_regions
+        sizes = np.argmax(cumsum >= prob, axis=1) + 1
+        # argmax returns 0 if never True (prob > 1.0 or all-zero row) → set to n_regions
+        sizes = np.where(cumsum[:, -1] >= prob, sizes, n_regions)
+        return sizes
+
+    mat_coverage  = []
+    emp_coverage  = []
+    n_transitions_list = []
+
+    for k in range(1, max_k + 1):
+        emp_T_k, pairs = _build_emp_Tk(run_labels, n_regions, k, laplace)
+
+        if not pairs:
+            mat_coverage.append(float('nan'))
+            emp_coverage.append(float('nan'))
+            n_transitions_list.append(0)
+            continue
+
+        mat_sizes = _coverage_sizes(T_powers[k - 1])  # (n_regions,)
+        emp_sizes = _coverage_sizes(emp_T_k)           # (n_regions,)
+
+        # Average over observed transitions (weighted by visit frequency)
+        mat_coverage.append(float(np.mean([mat_sizes[i] for i, _ in pairs])))
+        emp_coverage.append(float(np.mean([emp_sizes[i] for i, _ in pairs])))
+        n_transitions_list.append(len(pairs))
+
+    return mat_coverage, emp_coverage, n_transitions_list
+
+
 def simulate(tree, env, n_sims=5):
     """
     Simulate trajectories from the tree by starting at the initial state and
